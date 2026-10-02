@@ -1,0 +1,307 @@
+"""전체 흐름 테스트 — 실행: pytest -q
+
+mock AI의 신뢰도: 키워드 0개 0.4 / 1개 0.8 / 2개 이상 0.95 → 기준 0.8 이상이면 자동답변
+"""
+import re
+from datetime import timedelta
+
+from sqlalchemy import select
+
+from app.config import Settings
+from app.db import SessionLocal
+from app.enums import ReviewReason
+from app.models import Conversation, Customer
+from app.plugins.ai_client import AIResult, AISource
+from app.security import create_access_token
+from app.services.decision import decide
+from tests.conftest import make_pdf
+
+AUTO_Q = "배송 기간이 며칠이나 걸리나요?"            # 키워드 2개 → 0.95 → 자동답변
+REVIEW_Q = "안녕하세요 그냥 여쭤볼 게 있어서요"       # 키워드 0개 → 0.4 → 검토
+EARPHONE = "20241210-1234567"                          # 시연 고객(김민지)의 가짜 주문
+
+
+def _start(client, headers, content, order_no=None, wait=True):
+    body = {"content": content, **({"order_no": order_no} if order_no else {})}
+    r = client.post("/api/conversations", params={"wait": wait}, json=body, headers=headers)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _send(client, headers, no, content, wait=True):
+    return client.post(f"/api/conversations/{no}/messages", params={"wait": wait}, json={"content": content},
+                       headers=headers)
+
+
+def _approve(client, admin_headers, no, **body):
+    qid = client.get(f"/api/admin/reviews/{no}", headers=admin_headers).json()["review_question"]["message_id"]
+    return client.post(f"/api/admin/reviews/{no}/questions/{qid}/approve", headers=admin_headers,
+                       json={"response_text": "담당자 답변입니다.", **body})
+
+
+# ───────── 체험 입장 / 권한 ─────────
+
+def test_demo_entry_and_roles(client, customer_headers, admin_headers):
+    r = client.post("/api/demo/customer")
+    assert r.json()["role"] == "customer" and r.json()["name"] == "김민지"
+    assert client.post("/api/demo/admin").json()["role"] == "admin"
+    assert client.get("/api/orders").status_code == 401
+    assert client.get("/api/admin/reviews", headers=customer_headers).status_code == 401
+    assert client.get("/api/orders", headers=admin_headers).status_code == 401
+
+
+# ───────── 고객: 주문 상품 / 채팅 ─────────
+
+def test_orders_for_dropdown(client, customer_headers):
+    orders = client.get("/api/orders", headers=customer_headers).json()
+    assert [o["product_name"] for o in orders] == ["무선 블루투스 이어폰 Pro", "데일리 코튼 니트 (베이지, M)",
+                                                   "스테인리스 텀블러 500ml"]
+
+
+def test_auto_answer_chat_with_order(client, customer_headers, monkeypatch):
+    seen = {}
+    from app.plugins import mock_ai
+    original = mock_ai.MockAIClient.answer
+
+    def spy(self, request):
+        seen.setdefault("requests", []).append(request)
+        return original(self, request)
+    monkeypatch.setattr(mock_ai.MockAIClient, "answer", spy)
+
+    d = _start(client, customer_headers, AUTO_Q, order_no=EARPHONE)
+    assert re.fullmatch(r"CS-\d{8}-\d{4}", d["inquiry_no"])
+    assert d["product_name"] == "무선 블루투스 이어폰 Pro" and d["order_no"] == EARPHONE
+    assert [m["role"] for m in d["messages"]] == ["CUSTOMER", "BOT"]
+    assert "sources" not in d["messages"][1]                     # 관련 정책은 고객 화면에서 뺌
+    assert d["status_code"] == "CHATTING" and d["status_label"] == "상담 중"
+    assert d["input_locked"] is False and d["auto_close_at"] is not None
+    assert d["category"] == "배송"                               # 화면용 유형
+    assert seen["requests"][0].order.product_name == "무선 블루투스 이어폰 Pro"   # AI 서버에 고른 상품 전달
+
+    r = _send(client, customer_headers, d["inquiry_no"], "결제 수단은 카드만 되나요?")
+    assert r.status_code == 201, r.text
+    assert [h.role for h in seen["requests"][1].history] == ["customer", "assistant"]
+
+    bad = client.post("/api/conversations", json={"content": AUTO_Q, "order_no": "없는주문"}, headers=customer_headers)
+    assert bad.status_code == 404 and bad.json()["error"]["code"] == "ORDER_NOT_FOUND"
+
+
+def test_review_flow_notice_lock_then_admin_answer_closes(client, customer_headers, admin_headers):
+    d = _start(client, customer_headers, REVIEW_Q)
+    no = d["inquiry_no"]
+    assert [m["role"] for m in d["messages"]] == ["CUSTOMER", "BOT"]
+    assert d["messages"][1]["is_notice"] is True and "담당자에게 전달" in d["messages"][1]["content"]
+    assert d["input_locked"] is True and d["lock_reason"] == "REVIEW_PENDING"
+    assert d["status_code"] == "REVIEWING" and d["status_label"] == "검토대기"
+    assert d["auto_close_at"] is None and d["product_name"] is None
+
+    r = _send(client, customer_headers, no, "아직인가요?")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "REVIEW_IN_PROGRESS"
+
+    detail = client.get(f"/api/admin/reviews/{no}", headers=admin_headers).json()
+    assert detail["customer"]["email"] == "kimminji@email.com" and detail["customer"]["phone"] == "010-1234-5678"
+    rq = detail["review_question"]
+    assert rq["needs_review"] and rq["ai_draft"]["text"] and rq["analysis"]["intent_confidence"] == 0.4
+
+    r = _approve(client, admin_headers, no, response_text="안녕하세요, 어떤 점이 궁금하신가요?")
+    assert r.status_code == 200, r.text
+    assert r.json()["status_code"] == "ANSWERED" and r.json()["close_reason_label"] == "관리자 답변 후 종료"
+
+    d = client.get(f"/api/conversations/{no}", headers=customer_headers).json()
+    assert [m["role"] for m in d["messages"]] == ["CUSTOMER", "BOT", "ADMIN"]
+    assert d["status"] == "CLOSED" and d["close_reason"] == "ADMIN_ANSWERED"
+    assert d["status_label"] == "답변완료" and d["answered_by"] == "ADMIN" and d["answered_by_label"] == "관리자 답변"
+    assert d["admin_answer"] == "안녕하세요, 어떤 점이 궁금하신가요?" and d["answered_at"] is not None
+    assert _approve(client, admin_headers, no).status_code == 409    # 이미 처리함 (review_question = 처리한 질문)
+
+
+def test_new_chat_and_close_button(client, customer_headers):
+    a = _start(client, customer_headers, AUTO_Q)
+    b = _start(client, customer_headers, AUTO_Q)
+    old = client.get(f"/api/conversations/{a['inquiry_no']}", headers=customer_headers).json()
+    assert old["status"] == "CLOSED" and old["close_reason_label"] == "새 채팅 시작" and len(old["messages"]) == 2
+    assert old["answered_by"] == "AI" and old["admin_answer"] is None
+    assert client.get("/api/conversations/current", headers=customer_headers).json()["inquiry_no"] == b["inquiry_no"]
+
+    r = client.post(f"/api/conversations/{b['inquiry_no']}/close", headers=customer_headers)
+    assert r.json()["close_reason_label"] == "고객 종료" and r.json()["lock_reason"] == "CLOSED"
+    r = _send(client, customer_headers, b["inquiry_no"], "추가 질문")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "CONVERSATION_CLOSED"
+    assert client.get("/api/conversations/current", headers=customer_headers).json() is None
+
+
+def test_idle_timeout_only_while_chatting_with_bot(client, customer_headers):
+    chatting = _start(client, customer_headers, AUTO_Q)["inquiry_no"]
+    with SessionLocal() as db:
+        conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == chatting))
+        conv.last_answer_at = conv.last_answer_at - timedelta(minutes=6)
+        db.commit()
+    d = client.get(f"/api/conversations/{chatting}", headers=customer_headers).json()
+    assert d["status"] == "CLOSED" and d["close_reason"] == "TIMEOUT"
+
+    reviewing = _start(client, customer_headers, REVIEW_Q)["inquiry_no"]
+    with SessionLocal() as db:
+        conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == reviewing))
+        conv.messages[0].created_at = conv.messages[0].created_at - timedelta(hours=2)   # 2시간째 검토 대기
+        db.commit()
+    d = client.get(f"/api/conversations/{reviewing}", headers=customer_headers).json()
+    assert d["status"] == "OPEN" and d["lock_reason"] == "REVIEW_PENDING"
+
+
+def test_closed_while_reviewing_still_gets_admin_answer(client, customer_headers, admin_headers):
+    no = _start(client, customer_headers, REVIEW_Q)["inquiry_no"]
+    client.post(f"/api/conversations/{no}/close", headers=customer_headers)
+    assert client.get(f"/api/conversations/{no}", headers=customer_headers).json()["status_code"] == "REVIEWING"
+    assert _approve(client, admin_headers, no).status_code == 200
+    d = client.get(f"/api/conversations/{no}", headers=customer_headers).json()
+    assert d["close_reason"] == "USER" and d["status_code"] == "ANSWERED" and d["admin_answer"]
+
+
+def test_my_list_tabs_search_and_ownership(client, customer_headers):
+    _start(client, customer_headers, "텀블러 환불 신청은 어디서 하나요? 환불 받고 싶어요", order_no="20241205-3456789")
+    all_items = client.get("/api/conversations", headers=customer_headers, params={"size": 100}).json()
+    assert all_items["page"]["total"] == len(all_items["items"])
+    assert {"CHATTING", "REVIEWING", "ANSWERED"} >= {i["status_code"] for i in all_items["items"]}
+    assert any(i["status_code"] == "CHATTING" for i in all_items["items"])          # 상담 중도 '전체'에 보임
+    created = [i["created_at"] for i in all_items["items"]]
+    assert created == sorted(created, reverse=True)
+    for code in ("REVIEWING", "ANSWERED"):
+        items = client.get("/api/conversations", headers=customer_headers, params={"status": code}).json()["items"]
+        assert items and all(i["status_code"] == code for i in items)
+
+    by_product = client.get("/api/conversations", headers=customer_headers, params={"q": "텀블러"}).json()["items"]
+    assert by_product and by_product[0]["product_name"] == "스테인리스 텀블러 500ml"
+
+    with SessionLocal() as db:
+        other = Customer(name="다른고객", phone="01099998888")
+        db.add(other)
+        db.commit()
+        token, _ = create_access_token("customer", other.id)
+    r = client.get(f"/api/conversations/{all_items['items'][0]['inquiry_no']}",
+                   headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 404
+
+
+def test_ai_error_goes_to_review(client, customer_headers, admin_headers, monkeypatch):
+    class Broken:
+        def answer(self, request):
+            raise RuntimeError("model server down")
+    monkeypatch.setattr("app.services.pipeline.get_ai_client", lambda: Broken())
+    no = _start(client, customer_headers, "결제가 두 번 됐어요")["inquiry_no"]
+    rq = client.get(f"/api/admin/reviews/{no}", headers=admin_headers).json()["review_question"]
+    assert [x["code"] for x in rq["analysis"]["reasons"]] == ["AI_ERROR"] and rq["ai_draft"] is None
+    assert _approve(client, admin_headers, no).json()["error"]["code"] == "LABEL_REQUIRED"
+    assert _approve(client, admin_headers, no, category="결제", intent="결제 문제").status_code == 200
+
+
+# ───────── 관리자 ─────────
+
+def test_admin_tabs_filters_and_detail(client, admin_headers):
+    get = lambda **p: client.get("/api/admin/reviews", params=p, headers=admin_headers).json()
+    pending, all_, done = get(tab="pending"), get(tab="all", size=100), get(tab="done")
+    assert pending["counts"]["all"] == pending["counts"]["pending"] + pending["counts"]["done"]
+    assert all(i["status_code"] == "REVIEWING" for i in pending["items"])
+    assert all(i["status_code"] == "ANSWERED" for i in done["items"])
+    assert {i["status_code"] for i in all_["items"]} <= {"REVIEWING", "ANSWERED"}   # 상담 중은 끝난 뒤에 보임
+    created = [i["created_at"] for i in pending["items"]]
+    assert created == sorted(created, reverse=True)                                   # 최신순
+    item = all_["items"][0]
+    assert item["customer_email"] and item["customer_phone"]
+
+    refund = get(tab="all", category="교환/환불")["items"]
+    assert refund and all(i["category"] == "교환/환불" for i in refund)
+    assert client.get("/api/admin/reviews", params={"category": "환불"}, headers=admin_headers).status_code == 422
+    assert [i["product_name"] for i in get(tab="all", q="텀블러")["items"]] == ["스테인리스 텀블러 500ml"]
+
+    d = client.get(f"/api/admin/reviews/{item['inquiry_no']}", headers=admin_headers).json()
+    assert d["previous_inquiries"] and all(p["inquiry_no"] != item["inquiry_no"] for p in d["previous_inquiries"])
+
+
+def test_dashboard_all_time(client, admin_headers):
+    d = client.get("/api/admin/dashboard", headers=admin_headers).json()
+    assert d["total_inquiries"] == d["pending_review"] + d["answered"]["total"]
+    assert d["answered"]["total"] == d["answered"]["ai"] + d["answered"]["admin"]
+    assert d["ai_auto_rate"] == round(d["answered"]["ai"] / d["total_inquiries"], 4)
+    assert {c["name"] for c in d["by_category"]} <= {"배송", "결제", "교환/환불", "주문", "기타", "미분류"}
+    assert len(d["hourly"]) == 24 and d["peak_window"]["end_hour"] - d["peak_window"]["start_hour"] == 2
+    waits = [p["waiting_minutes"] for p in d["pending_list"]]
+    assert waits == sorted(waits, reverse=True) and waits[0] >= 120     # 오래된 순
+    assert d["chatting_now"] >= 0
+
+
+def test_policies_pdf(client, admin_headers):
+    names = [p["title"] for p in client.get("/api/admin/policies", headers=admin_headers).json()]
+    assert "배송 안내 (샘플)" in names
+
+    pdf = make_pdf("Delivery policy: shipped within 2 business days")
+    r = client.post("/api/admin/policies", headers=admin_headers,
+                    files={"file": ("delivery_policy.pdf", pdf, "application/pdf")},
+                    data={"title": "배송 정책 · 배송 기간 안내", "description": "출고 기준일, 배송 소요 기간"})
+    assert r.status_code == 201, r.text
+    p = r.json()
+    assert p["title"] == "배송 정책 · 배송 기간 안내" and p["filename"] == "delivery_policy.pdf"
+    assert p["text_extracted"] is True and p["version"] == 1 and p["doc_key"] == "delivery_policy"
+    pid = p["id"]
+
+    dup = client.post("/api/admin/policies", headers=admin_headers, files={"file": ("delivery_policy.pdf", pdf, "application/pdf")})
+    assert dup.status_code == 409
+    bad = client.post("/api/admin/policies", headers=admin_headers, files={"file": ("x.docx", b"PK", "application/octet-stream")})
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+    untitled = client.post("/api/admin/policies", headers=admin_headers,
+                           files={"file": ("exchange_policy.pdf", make_pdf("Exchange"), "application/pdf")})
+    assert untitled.json()["title"] == "exchange_policy"               # 문서명 비우면 파일명
+
+    view = client.get(f"/api/admin/policies/{pid}/file", headers=admin_headers)
+    assert view.status_code == 200 and view.headers["content-type"] == "application/pdf"
+    assert view.headers["content-disposition"].startswith("inline") and view.content == pdf
+    dl = client.get(f"/api/admin/policies/{pid}/file", params={"download": True}, headers=admin_headers)
+    assert dl.headers["content-disposition"].startswith("attachment")
+
+    new_pdf = make_pdf("Delivery policy v2")
+    r = client.put(f"/api/admin/policies/{pid}/file", headers=admin_headers,
+                   files={"file": ("delivery_policy_v2.pdf", new_pdf, "application/pdf")})
+    assert r.json()["version"] == 2 and r.json()["filename"] == "delivery_policy_v2.pdf"
+    assert r.json()["doc_key"] == "delivery_policy"                  # 파일을 바꿔도 문서 키는 그대로
+    assert client.get(f"/api/admin/policies/{pid}/file", headers=admin_headers).content == new_pdf
+
+    assert client.delete(f"/api/admin/policies/{pid}", headers=admin_headers).status_code == 204
+    assert client.get(f"/api/admin/policies/{pid}", headers=admin_headers).status_code == 404
+    assert pid not in [p["id"] for p in client.get("/api/admin/policies", headers=admin_headers).json()]
+
+
+def test_training_export_and_meta(client, admin_headers, customer_headers):
+    no = _start(client, customer_headers, REVIEW_Q)["inquiry_no"]
+    _approve(client, admin_headers, no, intent="고객 서비스 문의", use_for_training=True)
+    text = client.get("/api/admin/training-data/export", headers=admin_headers).content.decode("utf-8-sig")
+    assert text.splitlines()[0] == "플래그,문의 내용,카테고리,의도,응답,source_file,inquiry_no,turn,reviewed_at"
+    assert no in text
+
+    m = client.get("/api/admin/meta", headers=admin_headers).json()
+    assert m["display_categories"] == ["배송", "결제", "교환/환불", "주문", "기타"]
+    assert m["display_category_map"]["취소"] == "주문" and m["display_category_map"]["문의"] == "기타"
+
+
+def test_removed_features(client, customer_headers, admin_headers):
+    assert client.get("/api/me", headers=customer_headers).status_code == 404               # 계정 정보 탭 삭제
+    assert client.post("/api/admin/policies/1/attachments", headers=admin_headers).status_code == 404
+    no = client.get("/api/conversations", headers=customer_headers).json()["items"][0]["inquiry_no"]
+    assert client.delete(f"/api/conversations/{no}", headers=customer_headers).status_code == 405   # 고객 삭제 없음
+
+
+# ───────── 자동답변 판단 규칙 ─────────
+
+def _result(**kw):
+    base = {"category": "배송", "intent": "배송 기간 확인", "category_confidence": 0.9, "intent_confidence": 0.9,
+            "answer": "배송은 보통 1~3일 걸립니다.", "sources": [AISource(title="배송", text="...", score=0.8)]}
+    base.update(kw)
+    return AIResult(**base)
+
+
+def test_decision_rules():
+    s = Settings(_env_file=None)
+    assert decide(_result(), None, s).auto_send
+    assert decide(_result(intent_confidence=0.8, category_confidence=0.8), None, s).auto_send
+    assert decide(_result(intent_confidence=0.79), None, s).reasons == [ReviewReason.LOW_CONFIDENCE]
+    assert decide(_result(intent_confidence=None, category_confidence=None), None, s).reasons == [ReviewReason.NO_CONFIDENCE]
+    assert decide(None, "boom", s).reasons == [ReviewReason.AI_ERROR]
+    assert decide(_result(category="환불", intent="환불받기", sources=[], answer="네."), None, s).auto_send

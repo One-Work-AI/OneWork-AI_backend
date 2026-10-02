@@ -1,0 +1,74 @@
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
+# 테스트 전용 DB와 설정 (실제 .env·DB에 영향 없음) — app을 불러오기 전에 설정해야 함
+_tmp = Path(tempfile.mkdtemp(prefix="cs_chatbot_test_"))
+os.environ["DATABASE_URL"] = f"sqlite:///{(_tmp / 'test.db').as_posix()}"
+os.environ["AI_MODE"] = "mock"
+os.environ["JWT_SECRET"] = "test-secret-for-pytest-only-0123456789"
+os.environ["CHAT_TIMEOUT_SWEEP_SECONDS"] = "0"          # 테스트에서는 백그라운드 자동 종료 확인 끔
+os.environ["POLICY_FILE_DIR"] = (_tmp / "policies").as_posix()
+
+from fastapi.testclient import TestClient
+
+from app.db import Base, SessionLocal, engine
+from app.main import app
+from app.services.policies import ingest_directory
+from scripts import seed_base
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def make_pdf(text: str) -> bytes:
+    """글자가 들어 있는 아주 작은 PDF (영문만)."""
+    stream = f"BT /F1 12 Tf 20 100 Td ({text}) Tj ET".encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 144] /Contents 4 0 R "
+         b"/Resources << /Font << /F1 5 0 R >> >> >>"),
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _db():
+    Base.metadata.create_all(engine)
+    seed_base.main()
+    with SessionLocal() as db:
+        ingest_directory(db, ROOT / "policies_sample")
+    yield
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def client():
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture(scope="session")
+def customer_headers(client):
+    r = client.post("/api/demo/customer")
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture(scope="session")
+def admin_headers(client):
+    r = client.post("/api/demo/admin")
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
