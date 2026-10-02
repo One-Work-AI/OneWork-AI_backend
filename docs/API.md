@@ -21,7 +21,7 @@
 ## 에러 형식 (공통)
 
 ```json
-{"error": {"code": "REVIEW_IN_PROGRESS", "message": "담당자가 확인 중입니다. 답변은 문의 내역에서 확인하실 수 있습니다."}}
+{"error": {"code": "CONVERSATION_CLOSED", "message": "종료된 상담입니다. 새 채팅으로 문의해 주세요."}}
 ```
 
 | code | 상태 | 언제 |
@@ -29,9 +29,7 @@
 | `VALIDATION_ERROR` | 422 | 입력 형식 오류 (`details`에 칸별 메시지) |
 | `UNAUTHORIZED` | 401 | 토큰이 없거나 만료 → 로그인 화면으로 |
 | `CONVERSATION_NOT_FOUND` / `ORDER_NOT_FOUND` | 404 | 없는 문의번호·주문번호 |
-| `CONVERSATION_CLOSED` | 409 | 종료된 채팅에 메시지를 보냄 |
-| `ANSWER_IN_PROGRESS` | 409 | 앞 질문의 답변을 만드는 중에 또 보냄 |
-| `REVIEW_IN_PROGRESS` | 409 | 담당자 검토 중에 메시지를 보냄 |
+| `CONVERSATION_CLOSED` | 409 | 종료된 채팅에 메시지를 보냄 (입력이 막히는 유일한 경우) |
 | `NOT_REVIEW_PENDING` | 409 | 이미 처리한 질문을 승인하려 함 |
 | `DUPLICATE_POLICY` | 409 | 같은 파일 이름의 정책 문서가 이미 있음 |
 | `UNSUPPORTED_FILE_TYPE` / `FILE_TOO_LARGE` | 422 / 413 | PDF가 아니거나 200MB 초과 |
@@ -54,13 +52,15 @@
 - `wait=true`면 AI 답변까지 기다렸다가 채팅 전체를 돌려줍니다 (`st.spinner`로 감싸기)
 
 **이어서 보내기** `POST /api/conversations/{문의번호}/messages?wait=true` `{"content": "..."}`
+- 앞 질문의 답을 기다리지 않고 보내도 됩니다. 서버가 **보낸 순서대로** 하나씩 답합니다.
+  (`wait=true`면 앞 질문 → 이번 질문 답변까지 기다렸다가 응답)
 
 **채팅 응답**
 ```json
 {
   "inquiry_no": "Q20261002-010", "status_code": "CHATTING", "status_label": "상담 중",
   "product_name": "무선 블루투스 이어폰 Pro", "category": "배송",
-  "input_locked": false, "lock_reason": null, "auto_close_at": "2026-10-02T05:19:00Z",
+  "input_locked": false, "answering": false, "review_pending": false, "auto_close_at": "2026-10-02T05:19:00Z",
   "messages": [
     {"id": 1, "role": "CUSTOMER", "content": "주문한 상품 언제 도착하나요?", "is_notice": false},
     {"id": 2, "role": "BOT", "content": "주문하신 상품은 …", "is_notice": false}
@@ -68,12 +68,14 @@
 }
 ```
 - `role`: CUSTOMER(오른쪽 주황 말풍선) / BOT(AI 상담사) / ADMIN(상담원 답변)
-- **입력창 잠금** `input_locked` / `lock_reason`
-  - `PROCESSING`: 답변 생성 중
-  - `REVIEW_PENDING`: 마지막 BOT 메시지가 `is_notice: true`인 "담당자에게 전달했어요…" 안내 → 입력 잠금.
-    관리자가 답변하면 **상담이 종료**되고, 답변은 문의 내역의 상세에서 보입니다.
-  - `CLOSED`: "채팅이 종료되었어요. 문의번호 #…로 저장되었어요" + **새 채팅하기 / 문의 내역 보기**
-- **5분 자동 종료**: `auto_close_at`까지 메시지가 없으면 서버가 종료합니다 (챗봇 답변 후에만 셈, 검토 대기 중엔 멈춤).
+- **입력창 잠금** `input_locked`: **상담이 종료됐을 때만** `true`
+  → "채팅이 종료되었어요. 문의번호 #…로 저장되었어요" + **새 채팅하기 / 문의 내역 보기**
+- `answering: true`: AI가 답을 만드는 중 (입력은 그대로 가능, "답변 작성 중…" 표시 정도)
+- `review_pending: true`: 담당자 확인 중인 질문이 있음. 해당 질문 뒤에 `is_notice: true`인 BOT 안내
+  ("담당자에게 전달했어요. 답변이 오면 이 채팅에서 알려드릴게요…")가 붙어 있고, **입력은 계속 가능**합니다.
+  관리자가 승인하면 **같은 채팅에 ADMIN 메시지**(상담원 답변, `reply_to_id` = 해당 질문)가 붙고 상담은 계속됩니다.
+- **5분 자동 종료**: `auto_close_at`까지 메시지가 없으면 서버가 종료합니다.
+  챗봇·상담원 답변 후에만 세고, **검토 대기 중인 질문이 있으면 적용하지 않습니다** (`auto_close_at: null`).
   화면을 다시 그릴 때 `status`가 `CLOSED`인지 확인하면 됩니다.
 
 **채팅 종료하기** `POST /api/conversations/{문의번호}/close?reason=USER`
@@ -84,9 +86,10 @@
 
 `GET /api/conversations?status=&q=&page=1&size=10` (최신순)
 
-- 탭: 전체(생략 — 상담 중 포함) / 검토대기 `status=REVIEWING` / 답변완료 `status=ANSWERED`
+- 탭: 전체(생략) / 상담 중 `status=CHATTING` / 답변완료 `status=ANSWERED`
+  - 고객 화면에는 '검토대기' 상태가 없습니다. 검토 대기 중인 문의는 관리자가 답할 때까지 '상담 중'으로 보입니다.
 - `q`: 문의 내용, 상품명 검색
-- 카드: `status_label`(답변완료/검토대기/상담 중) + `answered_by_label`(AI 답변/관리자 답변), `category`,
+- 카드: `status_label`(상담 중/답변완료) + `answered_by_label`(AI 답변/관리자 답변), `category`,
   `product_name`(null이면 "주문 상품 미선택"), `preview`(첫 질문), `created_at` / 페이지: `page.total`
 
 ## 문의 상세 (고객)
@@ -99,7 +102,7 @@
 | 제목 | 첫 고객 메시지 (`messages[0].content`) |
 | 문의번호 / 문의 유형 / 주문 상품 | `inquiry_no`, `category`, `product_name` |
 | 등록일 / 답변완료 | `created_at`, `answered_at` |
-| 답변 칸 | `admin_answer` (관리자 답변). `null`이고 AI가 답했으면 "AI 상담사가 채팅에서 바로 답변드렸어요" |
+| 답변 칸 | `admin_answer` (마지막 관리자 답변, 채팅 안에도 있음). `null`이고 AI가 답했으면 "AI 상담사가 채팅에서 바로 답변드렸어요" |
 | 상담 내역 | `messages`, 위에 "`created_at` 시작 · `close_reason_label` `closed_at`" (예: 고객 종료 14:36) |
 | 이어서 채팅하기 | `status_code`가 `CHATTING`일 때만 → 고객 문의 화면 |
 
@@ -131,13 +134,14 @@
 | 이전 채팅 내역 | `previous_inquiries` (같은 고객의 다른 문의, 최신순) |
 
 `review_question`은 검토대기 질문이고, 처리 후에는 처리한 질문입니다 (이때 `review_question.review`에 처리 기록).
-AI만 답한 문의면 `null`.
+AI만 답한 문의면 `null`. 고객이 검토 중에도 계속 채팅할 수 있어서, 채팅 내역에는 그 질문 뒤의 대화도 함께 보입니다
+(`review_question.message_id`와 같은 `id`의 메시지를 강조하면 됩니다).
 
 **승인하기** `POST /api/admin/reviews/{문의번호}/questions/{review_question.message_id}/approve`
 ```json
 {"response_text": "최종 답변"}
 ```
-→ 고객 채팅에 상담원 답변이 붙고 상담 종료. (선택 항목: `category`·`intent`·`use_for_training`·`remark` — 지금 화면에선 안 보내도 됨)
+→ 고객 채팅에 상담원 답변이 붙고 **상담은 계속**됩니다. (선택 항목: `category`·`intent`·`use_for_training`·`remark` — 지금 화면에선 안 보내도 됨)
 
 ## 관리자 — 운영 대시보드 (전체 기간)
 

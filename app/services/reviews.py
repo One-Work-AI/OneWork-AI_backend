@@ -5,7 +5,7 @@
 - 전체: 검토대기 + 답변완료 (상담 중인 채팅은 끝난 뒤에 목록에 나타남)
 목록은 최신순입니다.
 
-승인하면 관리자 답변이 채팅에 붙고, 상담 중이던 채팅은 '관리자 답변 후 종료'로 끝납니다.
+승인하면 관리자 답변이 같은 채팅에 상담원 답변으로 붙고, 상담은 계속됩니다 (5분 타이머 다시 시작).
 """
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -16,7 +16,6 @@ from app.enums import (
     INTENT_TO_CATEGORY,
     QUESTION_STATUS_LABELS,
     REVIEW_REASON_LABELS,
-    CloseReason,
     ConversationStatus,
     MessageRole,
     QuestionStatus,
@@ -196,7 +195,7 @@ def get_detail(db: Session, inquiry_no: str) -> ReviewDetail:
 
 
 def approve(db: Session, inquiry_no: str, message_id: int, admin: AdminUser, req: ApproveRequest) -> ReviewDetail:
-    """검토대기 질문에 최종 답변 승인 → 고객 채팅에 관리자 답변이 붙고, 상담 중이던 채팅은 종료."""
+    """검토대기 질문에 최종 답변 승인 → 고객 채팅에 상담원 답변이 붙고, 상담은 계속됨."""
     conv = _get(db, inquiry_no)
     q = db.get(Message, message_id)
     if q is None or q.conversation_id != conv.id or q.role != MessageRole.CUSTOMER:
@@ -221,10 +220,8 @@ def approve(db: Session, inquiry_no: str, message_id: int, admin: AdminUser, req
     conv.messages.append(Message(role=MessageRole.ADMIN, content=req.response_text, reply_to_id=q.id, created_at=now))
     q.question_status = QuestionStatus.ADMIN_ANSWERED
     q.answered_at = now
-    if conv.status == ConversationStatus.OPEN:   # 관리자 답변 후 상담 종료
-        conv.status = ConversationStatus.CLOSED
-        conv.close_reason = CloseReason.ADMIN_ANSWERED
-        conv.closed_at = now
+    if conv.status == ConversationStatus.OPEN:   # 5분 자동 종료 타이머 다시 시작 (다른 검토 대기가 없을 때 적용)
+        conv.last_answer_at = now
     if is_first_question(db, q):                 # 목록에 보이는 문의 유형도 고친 값으로
         conv.category, conv.intent = category, intent
     db.commit()

@@ -3,13 +3,15 @@
 규칙
 - 고객이 보낸 메시지는 수정·취소할 수 없습니다 (그런 기능 자체가 없음).
 - 고객당 진행 중인 채팅은 1개. 새 채팅을 시작하면 이전 채팅은 저장된 채로 '새 채팅 시작'으로 종료됩니다.
-- 앞 질문의 답변이 나오기 전(AI 처리 중)이나 관리자 검토 대기 중에는 입력이 잠깁니다.
-  관리자가 검토 답변을 보내면 상담이 종료됩니다 (app/services/reviews.py).
-- 챗봇 답변이 표시된 뒤 고객이 CHAT_IDLE_TIMEOUT_MINUTES 동안 말이 없으면 자동 종료됩니다.
-  AI 처리 중이거나 검토 대기 중에는 타이머가 멈춥니다.
+- 입력이 막히는 건 상담이 종료됐을 때뿐입니다 (채팅 종료하기, 새 채팅하기, 5분 무응답).
+  AI가 답을 만드는 중이거나 검토 대기 중에도 계속 보낼 수 있고, 질문은 보낸 순서대로 답합니다 (pipeline.py).
+- 관리자 검토 답변은 같은 채팅에 상담원 답변으로 붙고, 상담은 계속됩니다 (reviews.py).
+- 챗봇·상담원 답변이 표시된 뒤 고객이 CHAT_IDLE_TIMEOUT_MINUTES 동안 말이 없으면 자동 종료됩니다.
+  AI 처리 중이거나 검토 대기 중인 질문이 있으면 타이머가 멈춥니다.
 
-문의 상태 (고객 문의 내역·관리자 문의 검토 공통)
-- 검토대기(REVIEWING): 검토가 필요한 질문이 있음 / 상담 중(CHATTING): 진행 중 / 답변완료(ANSWERED): 종료됨
+문의 상태
+- 고객 화면: 상담 중(CHATTING) / 답변완료(ANSWERED). 검토 대기 중인 문의는 관리자가 답할 때까지 '상담 중'
+- 관리자 화면: 검토대기(REVIEWING) / 상담 중(CHATTING) / 답변완료(ANSWERED) — status_code()
 """
 import logging
 import threading
@@ -24,7 +26,7 @@ from app.db import SessionLocal
 from app.enums import (
     ANSWERED_BY_LABELS,
     CLOSE_REASON_LABELS,
-    INQUIRY_STATUS_LABELS,
+    CUSTOMER_STATUS_LABELS,
     CloseReason,
     ConversationStatus,
     MessageRole,
@@ -47,10 +49,16 @@ def _has_question(status: QuestionStatus):
 # 문의 상태별 SQL 조건 (목록 거르기·건수 세기용)
 HAS_PENDING = _has_question(QuestionStatus.REVIEW_PENDING)
 HAS_PROCESSING = _has_question(QuestionStatus.PROCESSING)
+# 관리자 화면 상태
 STATUS_CONDITIONS = {
     "REVIEWING": [HAS_PENDING],
     "CHATTING": [~HAS_PENDING, Conversation.status == ConversationStatus.OPEN],
     "ANSWERED": [~HAS_PENDING, Conversation.status == ConversationStatus.CLOSED],
+}
+# 고객 화면 상태 (검토 대기 중이면 '상담 중')
+CUSTOMER_STATUS_CONDITIONS = {
+    "CHATTING": [or_(HAS_PENDING, Conversation.status == ConversationStatus.OPEN)],
+    "ANSWERED": STATUS_CONDITIONS["ANSWERED"],
 }
 
 
@@ -61,9 +69,15 @@ def questions_of(conv: Conversation) -> list[Message]:
 
 
 def status_code(conv: Conversation) -> str:
-    if any(q.question_status == QuestionStatus.REVIEW_PENDING for q in questions_of(conv)):
+    """관리자 화면 상태: 검토대기 / 상담 중 / 답변완료."""
+    if has_question(conv, QuestionStatus.REVIEW_PENDING):
         return "REVIEWING"
     return "CHATTING" if conv.status == ConversationStatus.OPEN else "ANSWERED"
+
+
+def customer_status_code(conv: Conversation) -> str:
+    """고객 화면 상태: 상담이 끝났고 검토 대기 질문이 없으면 답변완료, 아니면 상담 중."""
+    return "ANSWERED" if status_code(conv) == "ANSWERED" else "CHATTING"
 
 
 def answered_by(conv: Conversation) -> str | None:
@@ -87,20 +101,14 @@ def admin_answer(conv: Conversation) -> str | None:
     return admin_msgs[-1].content if admin_msgs else None
 
 
-def lock_reason(conv: Conversation) -> str | None:
-    if conv.status == ConversationStatus.CLOSED:
-        return "CLOSED"
-    statuses = {q.question_status for q in questions_of(conv)}
-    if QuestionStatus.PROCESSING in statuses:
-        return "PROCESSING"
-    if QuestionStatus.REVIEW_PENDING in statuses:
-        return "REVIEW_PENDING"
-    return None
+def has_question(conv: Conversation, status: QuestionStatus) -> bool:
+    return any(q.question_status == status for q in questions_of(conv))
 
 
 def auto_close_at(conv: Conversation):
     """자동 종료 예정 시각. 타이머가 멈춘 상태(답변 전, AI 처리 중, 검토 대기, 종료됨)면 None."""
-    if conv.status != ConversationStatus.OPEN or conv.last_answer_at is None or lock_reason(conv):
+    if (conv.status != ConversationStatus.OPEN or conv.last_answer_at is None
+            or has_question(conv, QuestionStatus.PROCESSING) or has_question(conv, QuestionStatus.REVIEW_PENDING)):
         return None
     return as_utc(conv.last_answer_at) + timedelta(minutes=get_settings().chat_idle_timeout_minutes)
 
@@ -155,27 +163,30 @@ def transcript(conv: Conversation) -> list[ChatMessageOut]:
 
 
 def to_detail(conv: Conversation) -> ConversationDetail:
-    code, by, reason = status_code(conv), answered_by(conv), lock_reason(conv)
+    code, by = customer_status_code(conv), answered_by(conv)
     return ConversationDetail(
-        inquiry_no=conv.inquiry_no, status=conv.status, status_code=code, status_label=INQUIRY_STATUS_LABELS[code],
+        inquiry_no=conv.inquiry_no, status=conv.status, status_code=code, status_label=CUSTOMER_STATUS_LABELS[code],
         answered_by=by, answered_by_label=ANSWERED_BY_LABELS.get(by) if by else None,
         category=display_category(conv.category), order_no=conv.order_no, product_name=conv.product_name,
         created_at=conv.created_at, answered_at=answered_at(conv), closed_at=conv.closed_at,
         close_reason=conv.close_reason,
         close_reason_label=CLOSE_REASON_LABELS[conv.close_reason] if conv.close_reason else None,
         admin_answer=admin_answer(conv),
-        input_locked=reason is not None, lock_reason=reason, auto_close_at=auto_close_at(conv),
+        input_locked=conv.status == ConversationStatus.CLOSED,
+        answering=has_question(conv, QuestionStatus.PROCESSING),
+        review_pending=has_question(conv, QuestionStatus.REVIEW_PENDING),
+        auto_close_at=auto_close_at(conv),
         messages=transcript(conv),
     )
 
 
 def to_summary(conv: Conversation) -> ConversationSummary:
-    code, by = status_code(conv), answered_by(conv)
+    code, by = customer_status_code(conv), answered_by(conv)
     first_q = next(iter(questions_of(conv)), None)
     return ConversationSummary(
         inquiry_no=conv.inquiry_no, preview=first_q.content if first_q else "",
         category=display_category(conv.category), product_name=conv.product_name,
-        status_code=code, status_label=INQUIRY_STATUS_LABELS[code],
+        status_code=code, status_label=CUSTOMER_STATUS_LABELS[code],
         answered_by=by, answered_by_label=ANSWERED_BY_LABELS.get(by) if by else None,
         created_at=conv.created_at, last_message_at=conv.messages[-1].created_at if conv.messages else conv.created_at)
 
@@ -253,13 +264,8 @@ def start_conversation(db: Session, customer: Customer, content: str, order_no: 
 
 def add_message(db: Session, customer: Customer, inquiry_no: str, content: str) -> Message:
     conv = get_owned(db, customer, inquiry_no)
-    reason = lock_reason(conv)
-    if reason == "CLOSED":
+    if conv.status == ConversationStatus.CLOSED:
         raise AppError(409, "CONVERSATION_CLOSED", "종료된 상담입니다. 새 채팅으로 문의해 주세요.")
-    if reason == "PROCESSING":
-        raise AppError(409, "ANSWER_IN_PROGRESS", "앞 질문의 답변을 만드는 중입니다. 잠시만 기다려 주세요.")
-    if reason == "REVIEW_PENDING":
-        raise AppError(409, "REVIEW_IN_PROGRESS", "담당자가 확인 중입니다. 답변은 문의 내역에서 확인하실 수 있습니다.")
     question = Message(role=MessageRole.CUSTOMER, content=content, question_status=QuestionStatus.PROCESSING)
     conv.messages.append(question)
     db.commit()
@@ -277,7 +283,7 @@ def close_conversation(db: Session, customer: Customer, inquiry_no: str, reason:
 def list_conversations(db: Session, customer: Customer, status: str | None, q: str | None,
                        page: int, size: int) -> ConversationListOut:
     close_idle_conversations()
-    cond = [Conversation.customer_id == customer.id, *STATUS_CONDITIONS.get(status, [])]
+    cond = [Conversation.customer_id == customer.id, *CUSTOMER_STATUS_CONDITIONS.get(status, [])]
     if q and q.strip():
         kw = q.strip()
         cond.append(or_(Conversation.product_name.contains(kw),

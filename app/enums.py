@@ -15,15 +15,13 @@ class ConversationStatus(str, Enum):
 class CloseReason(str, Enum):
     USER = "USER"                      # 고객이 '채팅 종료하기'를 누름
     NEW_CHAT = "NEW_CHAT"              # 고객이 '새 채팅하기'를 누름
-    TIMEOUT = "TIMEOUT"                # 챗봇 답변 후 일정 시간 동안 고객 응답 없음
-    ADMIN_ANSWERED = "ADMIN_ANSWERED"  # 관리자가 검토 답변을 보내서 종료
+    TIMEOUT = "TIMEOUT"                # 챗봇·상담원 답변 후 일정 시간 동안 고객 응답 없음
 
 
 CLOSE_REASON_LABELS = {
     CloseReason.USER: "고객 종료",
     CloseReason.NEW_CHAT: "새 채팅 시작",
     CloseReason.TIMEOUT: "응답 없음 자동 종료",
-    CloseReason.ADMIN_ANSWERED: "관리자 답변 후 종료",
 }
 
 
@@ -50,7 +48,12 @@ QUESTION_STATUS_LABELS = {
     QuestionStatus.ADMIN_ANSWERED: "관리자 답변",
 }
 
-# 문의(채팅) 상태 — 고객 문의 내역, 관리자 문의 검토 공통
+# 고객 화면 문의 상태 (검토 대기 중인 문의도 관리자가 답할 때까지 '상담 중')
+CUSTOMER_STATUS_LABELS = {
+    "CHATTING": "상담 중",
+    "ANSWERED": "답변완료",
+}
+# 관리자 화면 문의 상태
 INQUIRY_STATUS_LABELS = {
     "CHATTING": "상담 중",     # 채팅 진행 중 (검토 대기 질문 없음)
     "REVIEWING": "검토대기",   # 관리자 검토가 필요한 질문이 있음

@@ -86,33 +86,60 @@ def test_auto_answer_chat_with_order(client, customer_headers, monkeypatch):
     assert bad.status_code == 404 and bad.json()["error"]["code"] == "ORDER_NOT_FOUND"
 
 
-def test_review_flow_notice_lock_then_admin_answer_closes(client, customer_headers, admin_headers):
+def test_review_keeps_chat_open_and_admin_answer_joins_chat(client, customer_headers, admin_headers):
     d = _start(client, customer_headers, REVIEW_Q)
     no = d["inquiry_no"]
     assert [m["role"] for m in d["messages"]] == ["CUSTOMER", "BOT"]
     assert d["messages"][1]["is_notice"] is True and "담당자에게 전달" in d["messages"][1]["content"]
-    assert d["input_locked"] is True and d["lock_reason"] == "REVIEW_PENDING"
-    assert d["status_code"] == "REVIEWING" and d["status_label"] == "검토대기"
-    assert d["auto_close_at"] is None and d["product_name"] is None
+    assert d["input_locked"] is False and d["review_pending"] is True       # 검토 중에도 입력 가능
+    assert d["status_code"] == "CHATTING" and d["status_label"] == "상담 중"  # 고객 화면엔 검토 상태 없음
+    assert d["auto_close_at"] is None and d["product_name"] is None         # 검토 대기 중엔 5분 규칙 없음
 
-    r = _send(client, customer_headers, no, "아직인가요?")
-    assert r.status_code == 409 and r.json()["error"]["code"] == "REVIEW_IN_PROGRESS"
+    r = _send(client, customer_headers, no, AUTO_Q)                         # 검토 중에 이어서 질문
+    assert r.status_code == 201, r.text
+    assert [m["role"] for m in r.json()["messages"]] == ["CUSTOMER", "BOT", "CUSTOMER", "BOT"]
+    assert r.json()["auto_close_at"] is None                                # 아직 검토 대기 질문이 있음
 
     detail = client.get(f"/api/admin/reviews/{no}", headers=admin_headers).json()
+    assert detail["status_code"] == "REVIEWING" and detail["status_label"] == "검토대기"   # 관리자 화면엔 검토대기
     assert detail["customer"]["email"] == "kimminji@email.com" and detail["customer"]["phone"] == "010-1234-5678"
     rq = detail["review_question"]
-    assert rq["needs_review"] and rq["ai_draft"]["text"] and rq["analysis"]["intent_confidence"] == 0.4
+    assert rq["needs_review"] and rq["content"] == REVIEW_Q and rq["analysis"]["intent_confidence"] == 0.4
 
     r = _approve(client, admin_headers, no, response_text="안녕하세요, 어떤 점이 궁금하신가요?")
     assert r.status_code == 200, r.text
-    assert r.json()["status_code"] == "ANSWERED" and r.json()["close_reason_label"] == "관리자 답변 후 종료"
+    assert r.json()["chat_status"] == "OPEN" and r.json()["status_code"] == "CHATTING"
 
     d = client.get(f"/api/conversations/{no}", headers=customer_headers).json()
-    assert [m["role"] for m in d["messages"]] == ["CUSTOMER", "BOT", "ADMIN"]
-    assert d["status"] == "CLOSED" and d["close_reason"] == "ADMIN_ANSWERED"
-    assert d["status_label"] == "답변완료" and d["answered_by"] == "ADMIN" and d["answered_by_label"] == "관리자 답변"
-    assert d["admin_answer"] == "안녕하세요, 어떤 점이 궁금하신가요?" and d["answered_at"] is not None
+    assert d["messages"][-1]["role"] == "ADMIN" and d["messages"][-1]["reply_to_id"] == d["messages"][0]["id"]
+    assert d["status"] == "OPEN" and d["input_locked"] is False and d["auto_close_at"] is not None   # 계속 채팅, 타이머 재시작
+    assert d["admin_answer"] == "안녕하세요, 어떤 점이 궁금하신가요?"
+    assert _send(client, customer_headers, no, "감사합니다 배송 기간 며칠인가요?").status_code == 201
     assert _approve(client, admin_headers, no).status_code == 409    # 이미 처리함 (review_question = 처리한 질문)
+
+    d = client.post(f"/api/conversations/{no}/close", headers=customer_headers).json()
+    assert d["status_label"] == "답변완료" and d["answered_by"] == "ADMIN" and d["answered_by_label"] == "관리자 답변"
+
+
+def test_questions_answered_in_order(client, customer_headers):
+    from app.db import SessionLocal as S
+    from app.enums import MessageRole, QuestionStatus
+    from app.models import Message
+    from app.services.pipeline import process_question
+
+    no = _start(client, customer_headers, AUTO_Q)["inquiry_no"]
+    with S() as db:   # 앞 답변을 기다리지 않고 두 질문을 연달아 보낸 상태를 만듦
+        conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == no))
+        for text in ("결제 수단은 뭐가 있나요?", "배송지 변경하고 싶어요"):
+            conv.messages.append(Message(role=MessageRole.CUSTOMER, content=text,
+                                         question_status=QuestionStatus.PROCESSING))
+        db.commit()
+        second_id = conv.messages[-1].id
+    process_question(second_id)                       # 뒤 질문으로 불러도 앞 질문부터 처리
+    msgs = client.get(f"/api/conversations/{no}", headers=customer_headers).json()["messages"]
+    questions = [m["id"] for m in msgs if m["role"] == "CUSTOMER"]
+    answers = [m["reply_to_id"] for m in msgs if m["role"] == "BOT"]
+    assert answers == questions                       # 보낸 순서대로 답변
 
 
 def test_new_chat_and_close_button(client, customer_headers):
@@ -124,7 +151,7 @@ def test_new_chat_and_close_button(client, customer_headers):
     assert client.get("/api/conversations/current", headers=customer_headers).json()["inquiry_no"] == b["inquiry_no"]
 
     r = client.post(f"/api/conversations/{b['inquiry_no']}/close", headers=customer_headers)
-    assert r.json()["close_reason_label"] == "고객 종료" and r.json()["lock_reason"] == "CLOSED"
+    assert r.json()["close_reason_label"] == "고객 종료" and r.json()["input_locked"] is True
     r = _send(client, customer_headers, b["inquiry_no"], "추가 질문")
     assert r.status_code == 409 and r.json()["error"]["code"] == "CONVERSATION_CLOSED"
     assert client.get("/api/conversations/current", headers=customer_headers).json() is None
@@ -144,14 +171,19 @@ def test_idle_timeout_only_while_chatting_with_bot(client, customer_headers):
         conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == reviewing))
         conv.messages[0].created_at = conv.messages[0].created_at - timedelta(hours=2)   # 2시간째 검토 대기
         db.commit()
+    _send(client, customer_headers, reviewing, AUTO_Q)                        # 챗봇 답변이 붙어도
+    with SessionLocal() as db:
+        conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == reviewing))
+        conv.last_answer_at = conv.last_answer_at - timedelta(minutes=30)
+        db.commit()
     d = client.get(f"/api/conversations/{reviewing}", headers=customer_headers).json()
-    assert d["status"] == "OPEN" and d["lock_reason"] == "REVIEW_PENDING"
+    assert d["status"] == "OPEN" and d["review_pending"] is True              # 검토 대기 중이라 자동 종료 안 됨
 
 
 def test_closed_while_reviewing_still_gets_admin_answer(client, customer_headers, admin_headers):
     no = _start(client, customer_headers, REVIEW_Q)["inquiry_no"]
     client.post(f"/api/conversations/{no}/close", headers=customer_headers)
-    assert client.get(f"/api/conversations/{no}", headers=customer_headers).json()["status_code"] == "REVIEWING"
+    assert client.get(f"/api/conversations/{no}", headers=customer_headers).json()["status_code"] == "CHATTING"
     assert _approve(client, admin_headers, no).status_code == 200
     d = client.get(f"/api/conversations/{no}", headers=customer_headers).json()
     assert d["close_reason"] == "USER" and d["status_code"] == "ANSWERED" and d["admin_answer"]
@@ -161,11 +193,11 @@ def test_my_list_tabs_search_and_ownership(client, customer_headers):
     _start(client, customer_headers, "텀블러 환불 신청은 어디서 하나요? 환불 받고 싶어요", order_no="20241205-3456789")
     all_items = client.get("/api/conversations", headers=customer_headers, params={"size": 100}).json()
     assert all_items["page"]["total"] == len(all_items["items"])
-    assert {"CHATTING", "REVIEWING", "ANSWERED"} >= {i["status_code"] for i in all_items["items"]}
-    assert any(i["status_code"] == "CHATTING" for i in all_items["items"])          # 상담 중도 '전체'에 보임
+    assert {i["status_code"] for i in all_items["items"]} == {"CHATTING", "ANSWERED"}   # 고객 화면 상태는 2개
     created = [i["created_at"] for i in all_items["items"]]
     assert created == sorted(created, reverse=True)
-    for code in ("REVIEWING", "ANSWERED"):
+    assert client.get("/api/conversations", headers=customer_headers, params={"status": "REVIEWING"}).status_code == 422
+    for code in ("CHATTING", "ANSWERED"):
         items = client.get("/api/conversations", headers=customer_headers, params={"status": code}).json()["items"]
         assert items and all(i["status_code"] == code for i in items)
 

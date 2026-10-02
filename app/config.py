@@ -43,8 +43,9 @@ class Settings(BaseSettings):
     review_short_answer_enabled: bool = False
     review_min_answer_chars: int = 10
 
-    # 검토로 넘어갈 때 챗봇이 고객에게 남기는 안내 (이후 입력 잠금 → 관리자 답변 후 상담 종료)
-    review_notice_message: str = "확인이 필요한 내용이라 담당자에게 전달했어요. 검토 후 [문의 내역]에서 답변을 확인하실 수 있어요."
+    # 검토로 넘어갈 때 챗봇이 고객에게 남기는 안내 (입력은 계속 가능, 상담원 답변은 같은 채팅에 붙음)
+    review_notice_message: str = ("확인이 필요한 내용이라 담당자에게 전달했어요. 답변이 오면 이 채팅에서 알려드릴게요. "
+                                  "다른 궁금한 점은 계속 물어보셔도 돼요.")
 
     # 채팅 자동 종료 (챗봇 답변 후 고객이 이 시간 동안 말이 없으면 종료. 검토 대기 중에는 멈춤)
     chat_idle_timeout_minutes: float = 5

@@ -3,8 +3,9 @@
     고객 질문 (AI 처리 중) → AI 서버 (분류 + 정책 검색 + 답변 초안, 이전 대화·고른 주문 포함) → 자동답변 판단
         ├─ 신뢰도 기준 이상 → 챗봇 답변 메시지 추가 (자동답변) → 자동 종료 타이머 시작
         └─ 기준 미만 등   → 챗봇이 '담당자에게 전달했어요' 안내를 남기고 관리자 검토 대기
-                             (채팅 입력 잠김, 타이머 멈춤 → 관리자가 답변하면 상담 종료)
+                             (입력은 계속 가능, 타이머 멈춤 → 관리자 답변이 같은 채팅에 붙음)
 
+고객이 답을 기다리지 않고 연달아 보내도, 한 채팅의 질문은 보낸 순서대로 하나씩 처리합니다 (채팅별 잠금).
 AI 서버 호출이 끝난 뒤 결과를 한 번에 저장하므로, 중간에 서버가 꺼져도 반쯤 저장된 데이터가 남지 않습니다.
 꺼질 때 'AI 처리 중'이던 질문은 서버가 다시 켜질 때 resume_unfinished()가 다시 처리합니다.
 """
@@ -28,9 +29,11 @@ def _history(db, question: Message) -> list[HistoryItem]:
     n = get_settings().ai_history_messages
     if n <= 0:
         return []
+    # 이 질문보다 앞의 대화 + 그 사이에 붙은 앞 질문들의 답변 (뒤에 보낸 고객 질문과 안내 메시지는 제외)
     prev = db.scalars(select(Message)
-                      .where(Message.conversation_id == question.conversation_id, Message.id < question.id,
-                             Message.is_notice.is_(False))
+                      .where(Message.conversation_id == question.conversation_id, Message.id != question.id,
+                             Message.is_notice.is_(False),
+                             ~((Message.role == MessageRole.CUSTOMER) & (Message.id > question.id)))
                       .order_by(Message.id.desc()).limit(n)).all()
     return [HistoryItem(role="customer" if m.role == MessageRole.CUSTOMER else "assistant", content=m.content)
             for m in reversed(prev)]
@@ -59,7 +62,41 @@ def is_first_question(db, question: Message) -> bool:
     return first_id == question.id
 
 
+_locks: dict[int, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _conversation_lock(conversation_id: int) -> threading.Lock:
+    with _locks_guard:
+        return _locks.setdefault(conversation_id, threading.Lock())
+
+
 def process_question(question_id: int) -> None:
+    """질문이 속한 채팅의 'AI 처리 중' 질문들을 보낸 순서대로 처리.
+
+    앞 질문을 처리하는 중에 새 질문이 오면, 앞 질문이 끝날 때까지 기다렸다가 이어서 처리합니다.
+    """
+    with SessionLocal() as db:
+        q = db.get(Message, question_id)
+        if q is None:
+            return
+        conversation_id = q.conversation_id
+    with _conversation_lock(conversation_id):
+        done: set[int] = set()
+        while True:
+            with SessionLocal() as db:
+                next_id = db.scalar(select(Message.id)
+                                    .where(Message.conversation_id == conversation_id,
+                                           Message.question_status == QuestionStatus.PROCESSING,
+                                           Message.id.not_in(done))
+                                    .order_by(Message.id).limit(1))
+            if next_id is None:
+                return
+            done.add(next_id)
+            _process_one(next_id)
+
+
+def _process_one(question_id: int) -> None:
     s = get_settings()
     with SessionLocal() as db:
         q = db.get(Message, question_id)

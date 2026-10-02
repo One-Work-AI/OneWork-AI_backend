@@ -39,8 +39,8 @@ def list_orders(db: Session = Depends(get_db), customer: Customer = Depends(get_
 
 @router.get("/conversations", response_model=ConversationListOut, summary="문의 내역 (최신순)")
 def list_conversations(
-    status: Literal["CHATTING", "REVIEWING", "ANSWERED"] | None = Query(
-        None, description="탭: REVIEWING(검토대기) / ANSWERED(답변완료). 비우면 전체 (상담 중 포함)"),
+    status: Literal["CHATTING", "ANSWERED"] | None = Query(
+        None, description="탭: CHATTING(상담 중, 검토 대기 포함) / ANSWERED(답변완료). 비우면 전체"),
     q: str | None = Query(None, description="문의 내용, 상품명 검색"),
     page: int = Query(1, ge=1), size: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db), customer: Customer = Depends(get_current_customer),

@@ -79,7 +79,7 @@ class ConversationSummary(BaseModel):
     preview: str = Field(description="첫 질문")
     category: str | None = Field(description="문의 유형 (화면용 5개). 분류 전이면 null")
     product_name: str | None = Field(description="고른 주문 상품. null이면 '주문 상품 미선택'")
-    status_code: str = Field(description="CHATTING(상담 중) / REVIEWING(검토대기) / ANSWERED(답변완료)")
+    status_code: str = Field(description="CHATTING(상담 중) / ANSWERED(답변완료). 검토 대기 중이어도 '상담 중'")
     status_label: str
     answered_by: str | None = Field(description="답변완료일 때: AI / ADMIN")
     answered_by_label: str | None = Field(description="AI 답변 / 관리자 답변")
@@ -106,10 +106,11 @@ class ConversationDetail(BaseModel):
     answered_at: UTCDateTime | None = Field(description="답변완료 시각 (마지막 답변)")
     closed_at: UTCDateTime | None
     close_reason: CloseReason | None
-    close_reason_label: str | None = Field(description="고객 종료 / 새 채팅 시작 / 응답 없음 자동 종료 / 관리자 답변 후 종료")
-    admin_answer: str | None = Field(description="관리자 답변 ('답변' 칸). AI가 답한 문의면 null")
-    input_locked: bool = Field(description="true면 입력창을 잠그세요")
-    lock_reason: str | None = Field(description="PROCESSING(답변 생성 중) / REVIEW_PENDING(담당자 확인 중) / CLOSED(종료됨)")
+    close_reason_label: str | None = Field(description="고객 종료 / 새 채팅 시작 / 응답 없음 자동 종료")
+    admin_answer: str | None = Field(description="마지막 관리자 답변 ('답변' 칸). AI만 답한 문의면 null")
+    input_locked: bool = Field(description="true면 입력창을 잠그세요 (상담이 종료됐을 때만)")
+    answering: bool = Field(description="AI가 답을 만드는 중인 질문이 있음 (입력은 가능, 보낸 순서대로 답함)")
+    review_pending: bool = Field(description="담당자 확인 중인 질문이 있음 (입력은 가능)")
     auto_close_at: UTCDateTime | None = Field(description="이 시각까지 고객 메시지가 없으면 자동 종료 (타이머가 멈춘 상태면 null)")
     messages: list[ChatMessageOut]
 

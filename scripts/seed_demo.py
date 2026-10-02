@@ -72,10 +72,8 @@ def main():
         process_question(qid)
         if rng.random() < 0.3:      # 가끔 이어서 질문
             with SessionLocal() as db:
-                customer = db.get(Customer, cid)
-                if not svc.lock_reason(svc.get_owned(db, customer, inquiry_no)):
-                    qid = svc.add_message(db, customer, inquiry_no, questions.pop()[:2000]).id
-                    process_question(qid)
+                qid = svc.add_message(db, db.get(Customer, cid), inquiry_no, questions.pop()[:2000]).id
+            process_question(qid)
         with SessionLocal() as db:
             svc.close_conversation(db, db.get(Customer, cid), inquiry_no, CloseReason.USER)
         if (k + 1) % 5 == 0:
