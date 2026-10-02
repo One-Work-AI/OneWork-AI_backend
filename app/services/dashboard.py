@@ -57,7 +57,7 @@ def build_dashboard(db: Session, include_demo: bool) -> DashboardOut:
     for c in pending:
         pend = pending_questions(c)
         pending_list.append(PendingItem(
-            inquiry_no=c.inquiry_no, cs_no=c.cs_no, customer_name=c.customer.name, category=display_category(c.category),
+            inquiry_no=c.inquiry_no, customer_name=c.customer.name, category=display_category(c.category),
             product_name=c.product_name, preview=pend[0].content, created_at=c.created_at,
             waiting_minutes=waiting_minutes(pend) or 0, reasons=pending_reasons(pend)))
     pending_list.sort(key=lambda p: -p.waiting_minutes)   # 오래된 순

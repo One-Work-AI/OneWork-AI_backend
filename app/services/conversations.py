@@ -157,7 +157,7 @@ def transcript(conv: Conversation) -> list[ChatMessageOut]:
 def to_detail(conv: Conversation) -> ConversationDetail:
     code, by, reason = status_code(conv), answered_by(conv), lock_reason(conv)
     return ConversationDetail(
-        inquiry_no=conv.inquiry_no, cs_no=conv.cs_no, status=conv.status, status_code=code, status_label=INQUIRY_STATUS_LABELS[code],
+        inquiry_no=conv.inquiry_no, status=conv.status, status_code=code, status_label=INQUIRY_STATUS_LABELS[code],
         answered_by=by, answered_by_label=ANSWERED_BY_LABELS.get(by) if by else None,
         category=display_category(conv.category), order_no=conv.order_no, product_name=conv.product_name,
         created_at=conv.created_at, answered_at=answered_at(conv), closed_at=conv.closed_at,
@@ -173,7 +173,7 @@ def to_summary(conv: Conversation) -> ConversationSummary:
     code, by = status_code(conv), answered_by(conv)
     first_q = next(iter(questions_of(conv)), None)
     return ConversationSummary(
-        inquiry_no=conv.inquiry_no, cs_no=conv.cs_no, preview=first_q.content if first_q else "",
+        inquiry_no=conv.inquiry_no, preview=first_q.content if first_q else "",
         category=display_category(conv.category), product_name=conv.product_name,
         status_code=code, status_label=INQUIRY_STATUS_LABELS[code],
         answered_by=by, answered_by_label=ANSWERED_BY_LABELS.get(by) if by else None,
@@ -187,10 +187,11 @@ def list_orders(db: Session, customer: Customer) -> list[OrderOut]:
 
 
 def _next_inquiry_no(db: Session) -> str:
-    prefix = f"{get_settings().inquiry_no_prefix}-{kst_today():%Y%m%d}-"
-    last = db.scalar(select(func.max(Conversation.inquiry_no)).where(Conversation.inquiry_no.like(prefix + "%")))
-    seq = int(last.rsplit("-", 1)[1]) + 1 if last else 1
-    return f"{prefix}{seq:04d}"
+    """Q20261002-001 형식. 하루 999건을 넘으면 1000, 1001 …로 자릿수가 늘어납니다."""
+    prefix = f"{get_settings().inquiry_no_prefix}{kst_today():%Y%m%d}-"
+    today = db.scalars(select(Conversation.inquiry_no).where(Conversation.inquiry_no.like(prefix + "%"))).all()
+    seq = max((int(no.rsplit("-", 1)[1]) for no in today), default=0) + 1
+    return f"{prefix}{seq:03d}"
 
 
 def _close(conv: Conversation, reason: CloseReason) -> None:

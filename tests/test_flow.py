@@ -69,7 +69,7 @@ def test_auto_answer_chat_with_order(client, customer_headers, monkeypatch):
     monkeypatch.setattr(mock_ai.MockAIClient, "answer", spy)
 
     d = _start(client, customer_headers, AUTO_Q, order_no=EARPHONE)
-    assert re.fullmatch(r"CS-\d{8}-\d{4}", d["inquiry_no"])
+    assert re.fullmatch(r"Q\d{8}-\d{3}", d["inquiry_no"])
     assert d["product_name"] == "무선 블루투스 이어폰 Pro" and d["order_no"] == EARPHONE
     assert [m["role"] for m in d["messages"]] == ["CUSTOMER", "BOT"]
     assert "sources" not in d["messages"][1]                     # 관련 정책은 고객 화면에서 뺌

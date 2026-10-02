@@ -69,8 +69,6 @@ class Conversation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     inquiry_no: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    # CS 번호 — 쇼핑몰 DB에서 정하는 상담 번호. 백엔드는 받아서 저장만 함 (쇼핑몰 DB 연결 전에는 비어 있음)
-    cs_no: Mapped[str | None] = mapped_column(String(50), index=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("customer.id"), index=True)
     status: Mapped[ConversationStatus] = mapped_column(_enum(ConversationStatus), default=ConversationStatus.OPEN, index=True)
     # 고른 주문 상품 (사본 — 주문 정보가 나중에 바뀌어도 문의 당시 값 유지). '선택 안 함'이면 비어 있음

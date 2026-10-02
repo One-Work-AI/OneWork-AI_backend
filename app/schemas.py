@@ -76,7 +76,6 @@ class ChatMessageOut(BaseModel):
 
 class ConversationSummary(BaseModel):
     inquiry_no: str
-    cs_no: str | None = Field(None, description="CS 번호 (쇼핑몰 DB에서 받음, 아직 없으면 null)")
     preview: str = Field(description="첫 질문")
     category: str | None = Field(description="문의 유형 (화면용 5개). 분류 전이면 null")
     product_name: str | None = Field(description="고른 주문 상품. null이면 '주문 상품 미선택'")
@@ -95,7 +94,6 @@ class ConversationListOut(BaseModel):
 
 class ConversationDetail(BaseModel):
     inquiry_no: str
-    cs_no: str | None = Field(None, description="CS 번호 (쇼핑몰 DB에서 받음, 아직 없으면 null)")
     status: ConversationStatus
     status_code: str
     status_label: str
@@ -132,7 +130,6 @@ class CustomerOut(BaseModel):
 
 class ReviewListItem(BaseModel):
     inquiry_no: str
-    cs_no: str | None = Field(None, description="CS 번호 (쇼핑몰 DB에서 받음, 아직 없으면 null)")
     customer_name: str
     customer_email: str | None
     customer_phone: str | None
@@ -222,7 +219,6 @@ class RelatedInquiry(BaseModel):
 
 class ReviewDetail(BaseModel):
     inquiry_no: str
-    cs_no: str | None = Field(None, description="CS 번호 (쇼핑몰 DB에서 받음, 아직 없으면 null)")
     status_code: str
     status_label: str
     chat_status: ConversationStatus
@@ -289,7 +285,6 @@ class PeakWindow(BaseModel):
 
 class PendingItem(BaseModel):
     inquiry_no: str
-    cs_no: str | None = Field(None, description="CS 번호 (쇼핑몰 DB에서 받음, 아직 없으면 null)")
     customer_name: str
     category: str | None
     product_name: str | None

@@ -3,7 +3,7 @@
 - 서버를 켜면 **http://localhost:8000/docs** 에서 모든 API를 직접 눌러보며 확인할 수 있습니다.
 - 모든 시각은 UTC로 내려갑니다 (예: `2026-10-01T01:28:38Z`). 화면에는 한국 시간으로 바꿔서 보여주세요.
 - 문의 유형(`category`)은 화면용 5개로 내려갑니다: **배송 / 결제 / 교환/환불 / 주문 / 기타** (분류 전이면 `null`)
-- **CS 번호** `cs_no`: 쇼핑몰 DB에서 정하는 번호. 연결 전에는 `null`이니 화면에서는 "-"로 표시
+- 문의번호(`inquiry_no`) 형식: `Q20261002-001` (채팅 1개 = 문의번호 1개). CS 번호는 쓰지 않습니다.
 - 문의 상태: **상담 중(CHATTING) / 검토대기(REVIEWING) / 답변완료(ANSWERED)**, 답변완료면 `answered_by`: **AI / ADMIN**
 
 ## 로그인 화면 — 체험 입장
@@ -58,7 +58,7 @@
 **채팅 응답**
 ```json
 {
-  "inquiry_no": "CS-20261002-0010", "status_code": "CHATTING", "status_label": "상담 중",
+  "inquiry_no": "Q20261002-010", "status_code": "CHATTING", "status_label": "상담 중",
   "product_name": "무선 블루투스 이어폰 Pro", "category": "배송",
   "input_locked": false, "lock_reason": null, "auto_close_at": "2026-10-02T05:19:00Z",
   "messages": [

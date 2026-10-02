@@ -102,7 +102,7 @@ def list_reviews(db: Session, tab: str, q: str | None, category: str | None, pag
         cond.append(Conversation.category.in_(categories_for_display(category)))
     if q and q.strip():
         kw = q.strip()
-        cond.append(or_(Conversation.inquiry_no.contains(kw), Conversation.cs_no.contains(kw),
+        cond.append(or_(Conversation.inquiry_no.contains(kw),
                         Conversation.product_name.contains(kw),
                         Conversation.customer.has(Customer.name.contains(kw)),
                         exists().where(Message.conversation_id == Conversation.id, Message.content.contains(kw))))
@@ -120,7 +120,7 @@ def list_reviews(db: Session, tab: str, q: str | None, category: str | None, pag
         shown = pending[0] if pending else (qs[0] if qs else None)
         code = status_code(c)
         items.append(ReviewListItem(
-            inquiry_no=c.inquiry_no, cs_no=c.cs_no, customer_name=c.customer.name, customer_email=c.customer.email,
+            inquiry_no=c.inquiry_no, customer_name=c.customer.name, customer_email=c.customer.email,
             customer_phone=format_phone(c.customer.phone), category=display_category(c.category),
             product_name=c.product_name, status_code=code, status_label=INQUIRY_STATUS_LABELS[code],
             answered_by=answered_by(c), preview=_preview(shown.content) if shown else "",
@@ -181,7 +181,7 @@ def get_detail(db: Session, inquiry_no: str) -> ReviewDetail:
                         .options(selectinload(Conversation.messages))).all()
     code = status_code(conv)
     return ReviewDetail(
-        inquiry_no=conv.inquiry_no, cs_no=conv.cs_no, status_code=code, status_label=INQUIRY_STATUS_LABELS[code],
+        inquiry_no=conv.inquiry_no, status_code=code, status_label=INQUIRY_STATUS_LABELS[code],
         chat_status=conv.status,
         close_reason_label=CLOSE_REASON_LABELS[conv.close_reason] if conv.close_reason else None,
         created_at=conv.created_at, closed_at=conv.closed_at, answered_at=answered_at(conv),

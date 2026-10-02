@@ -58,8 +58,8 @@ class Settings(BaseSettings):
     policy_file_dir: str = "storage/policies"
     policy_max_mb: int = 200
 
-    # 문의번호 접두어
-    inquiry_no_prefix: str = "CS"
+    # 문의번호 접두어 — 형식: Q20261002-001 (접두어 + 한국 날짜 + 하루 일련번호 3자리)
+    inquiry_no_prefix: str = "Q"
 
 
 @lru_cache

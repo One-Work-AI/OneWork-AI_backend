@@ -10,7 +10,7 @@ AI 서버는 **분류 → 정책 검색 → 답변 생성을 한 번에** 해서
 
 ```json
 {
-  "inquiry_no": "CS-20261001-0001",
+  "inquiry_no": "Q20261001-001",
   "question": "그럼 계좌이체는요?",
   "order": {"order_no": "20241210-1234567", "product_name": "무선 블루투스 이어폰 Pro"},
   "history": [

@@ -97,8 +97,6 @@ tests/                 자동 테스트
 | **AI 서버(모델·RAG)** 완성 | `.env`에서 `AI_MODE=http`, `AI_SERVER_URL=...`. 형식은 docs/AI_SERVER_CONTRACT.md |
 | **신뢰도 계산 방식·범위** | `.env`의 `REVIEW_MIN_CONFIDENCE` (지금 0.8) |
 | **쇼핑몰 DB** 준비 | `app/plugins/order_source.py`에 쇼핑몰 DB에서 주문을 읽는 클래스 추가 + `.env`의 `ORDER_SOURCE`. 백엔드 고객과 쇼핑몰 고객을 어떻게 맞출지 정해야 함 |
-| **문의번호 형식** | `app/services/conversations.py`의 `_next_inquiry_no` (지금 `CS-YYYYMMDD-NNNN`) |
-| **CS 번호 발급 방식** | 쇼핑몰 DB에서 받은 값을 `conversation.cs_no`에 저장 (받는 시점·방법 결정 대기) |
 | **RAG 팀 조각 나누기 방식** | `app/plugins/chunker.py` |
 | **진짜 로그인** | `app/api/demo.py`만 바꾸면 됨 (나머지 API는 같은 토큰 사용) |
 | **PostgreSQL 사용** | `uv add "psycopg[binary]"` 후 `.env`의 `DATABASE_URL` 변경 → `alembic upgrade head` |
@@ -121,8 +119,7 @@ tests/                 자동 테스트
 | 주문 정보 | 지금은 가짜 주문 테이블. 쇼핑몰 DB가 준비되면 `order_source.py`만 교체 |
 | 시연 데이터 | 김민지 + 가짜 고객 여러 명(박서연·김하늘·정다은·이준호·최지훈)과 가짜 주문 |
 | 제외 | 긴급도, 영어 문의, 만족도, 연락처 전체 보기, 고객 화면의 관련 정책, 계정 정보 탭, 관리자 비밀번호 로그인 |
-| CS 번호 | **쇼핑몰 DB에서 정하는 상담 번호**. 백엔드는 받아서 `cs_no`에 저장만 함 (쇼핑몰 DB 연결 전에는 비어 있음) |
-| 대기 중 | 문의번호 형식 (지금 `CS-YYYYMMDD-NNNN`), CS 번호를 언제·어떻게 받을지 |
+| 문의번호 | `Q20261002-001` (Q + 한국 날짜 + 하루 일련번호 3자리). 채팅 1개 = 문의번호 1개. CS 번호는 쓰지 않음 |
 
 ## 구현하면서 정한 세부 동작
 
