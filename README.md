@@ -5,13 +5,14 @@ FastAPI + SQLAlchemy + Alembic. DB는 **팀 PostgreSQL**(DB 담당자의 `schema
 
 - 프론트엔드용 API 안내 (DAITDA 화면별): [docs/API.md](docs/API.md) — 서버 실행 후 http://localhost:8000/docs 에서도 확인
 - 모델·RAG 팀용 AI 서버 입출력 형식: [docs/AI_SERVER_CONTRACT.md](docs/AI_SERVER_CONTRACT.md)
+- 팀 DB (스키마·ERD·데이터 사전): [One-Work-AI/DAITDA_WOO](https://github.com/One-Work-AI/DAITDA_WOO)
+- 프론트엔드는 별도 레포에서 이 API를 호출합니다.
 
 ## 처음 실행하기 (Windows PowerShell, uv 사용)
 
-저장소의 `backend` 폴더에서 실행합니다. 프론트와 같은 Python 3.12, 같은 uv를 씁니다.
+저장소 맨 위 폴더에서 실행합니다. Python 3.12(.python-version), uv를 씁니다.
 
 ```powershell
-cd backend
 uv sync                                # 가상환경 + 패키지 설치 (.venv)
 copy .env.example .env                 # 그다음 .env에서 PGPASSWORD(DB 폴더 .env와 같은 값)와 JWT_SECRET 바꾸기
 
@@ -38,7 +39,7 @@ uv run python -m scripts.seed_demo --csv <validation_canonical_981.csv 경로> -
 
 ```powershell
 uv run pytest -q
-uv run ruff check .                    # PR 때 팀 CI가 저장소 전체에 같은 검사를 돌립니다
+uv run ruff check .                    # PR을 올리면 GitHub Actions(CI)가 같은 검사와 테스트를 돌립니다
 ```
 
 ## 처리 흐름
