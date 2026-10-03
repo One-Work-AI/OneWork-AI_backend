@@ -63,7 +63,7 @@ def start_conversation(data: ConversationCreate, background: BackgroundTasks,
     conv, question = svc.start_conversation(db, customer, data.content, data.order_no)
     _run(question.id, wait, background)
     db.expire_all()
-    return svc.to_detail(svc.get_owned(db, customer, conv.inquiry_no))
+    return svc.to_detail(svc.get_owned(db, customer, conv.ext.inquiry_no))
 
 
 @router.get("/conversations/{inquiry_no}", response_model=ConversationDetail, summary="문의 상세 (채팅 전체)")

@@ -15,10 +15,12 @@ dependencies = [
     "httpx>=0.27",
     "python-multipart>=0.0.9",  # 정책 PDF 업로드
     "pypdf>=4.0",               # 정책 PDF에서 글자 뽑기
+    "psycopg[binary]>=3.2",     # 팀 PostgreSQL 연결
 ]
 
 [dependency-groups]
 dev = [
+    "pgserver>=0.1.4",          # 테스트용 임시 PostgreSQL (설치 없이 실행)
     "pytest>=8.0",
     "ruff>=0.16.9",
 ]

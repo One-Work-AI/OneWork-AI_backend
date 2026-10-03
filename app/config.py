@@ -3,6 +3,7 @@ from functools import lru_cache
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 
 class Settings(BaseSettings):
@@ -10,8 +11,14 @@ class Settings(BaseSettings):
 
     app_name: str = "CS Chatbot Backend"
 
-    # DB
-    database_url: str = "sqlite:///./cs_chatbot.db"
+    # DB — 팀 PostgreSQL. DB 폴더의 .env와 같은 PG* 값을 쓰거나, DATABASE_URL 한 줄로 적습니다 (DATABASE_URL 우선)
+    database_url: str = ""
+    pghost: str = "localhost"
+    pgport: int = 5433
+    pgdatabase: str = "cs_chatbot"
+    pguser: str = "cs_owner"
+    pgpassword: str = ""
+    pgsslmode: str = "prefer"
 
     # 프론트엔드 주소 (CORS — 브라우저에서 직접 호출할 때만 해당, Streamlit 서버에서 호출하면 상관없음)
     cors_origins: list[str] = ["http://localhost:8501", "http://localhost:3000", "http://localhost:5173"]
@@ -51,8 +58,8 @@ class Settings(BaseSettings):
     chat_idle_timeout_minutes: float = 5
     chat_timeout_sweep_seconds: float = 30   # 자동 종료를 확인하는 주기 (0이면 백그라운드 확인 끔)
 
-    # 주문 정보를 가져오는 곳: local = 이 백엔드 DB의 가짜 주문 (쇼핑몰 DB가 준비되면 app/plugins/order_source.py에 추가)
-    order_source: Literal["local"] = "local"
+    # 주문 정보를 가져오는 곳: team = 팀 DB의 orders / order_item (다른 곳에서 읽으려면 app/plugins/order_source.py에 추가)
+    order_source: Literal["team"] = "team"
 
     # 정책 문서 (PDF)
     chunk_max_chars: int = 500
@@ -61,6 +68,14 @@ class Settings(BaseSettings):
 
     # 문의번호 접두어 — 형식: Q20261002-001 (접두어 + 한국 날짜 + 하루 일련번호 3자리)
     inquiry_no_prefix: str = "Q"
+
+    def sqlalchemy_url(self) -> str | URL:
+        if self.database_url:
+            return self.database_url
+        # 비밀번호에 특수문자가 있어도 되도록 URL.create로 조립
+        return URL.create("postgresql+psycopg", username=self.pguser, password=self.pgpassword or None,
+                          host=self.pghost, port=self.pgport, database=self.pgdatabase,
+                          query={"sslmode": self.pgsslmode})
 
 
 @lru_cache

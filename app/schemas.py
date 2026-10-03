@@ -65,11 +65,11 @@ class MessageCreate(BaseModel):
 
 
 class ChatMessageOut(BaseModel):
-    id: int
+    id: str = Field(description="화면 목록용 고유 키 (예: q12 질문, r5 답변, n7 안내)")
+    question_id: int = Field(description="이 메시지가 속한 고객 질문 번호 (질문이면 자기 자신, 답변·안내면 어떤 질문에 대한 것인지)")
     role: MessageRole = Field(description="CUSTOMER(고객) / BOT(AI 상담사) / ADMIN(상담원)")
     content: str
     created_at: UTCDateTime
-    reply_to_id: int | None = Field(description="답변·안내 메시지일 때, 어떤 질문에 대한 것인지")
     is_notice: bool = Field(description="true면 '담당자에게 전달했어요' 안내 (답변 아님)")
     question_status: QuestionStatus | None = Field(description="고객 질문일 때만: 처리 상태")
 
@@ -195,7 +195,7 @@ class ReviewRecordOut(BaseModel):
 
 
 class QuestionDetail(BaseModel):
-    message_id: int
+    question_id: int = Field(description="승인할 때 주소에 넣는 질문 번호")
     content: str
     created_at: UTCDateTime
     status: QuestionStatus

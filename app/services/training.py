@@ -7,29 +7,33 @@
 import csv
 import io
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, aliased
 
-from app.enums import MessageRole
-from app.models import AdminReview, Conversation, Message
+from app.models import AdminReview, AIResponse, ConversationExt, Inquiry
 from app.utils import to_kst
 
 COLUMNS = ["플래그", "문의 내용", "카테고리", "의도", "응답", "source_file", "inquiry_no", "turn", "reviewed_at"]
 
 
 def export_training_csv(db: Session) -> str:
+    earlier = aliased(Inquiry)
+    turn = (select(func.count(earlier.id))
+            .where(earlier.conversation_id == Inquiry.conversation_id, earlier.id <= Inquiry.id)
+            .scalar_subquery())
     rows = db.execute(
-        select(Message, AdminReview, Conversation)
-        .join(AdminReview, AdminReview.question_id == Message.id)
-        .join(Conversation, Conversation.id == Message.conversation_id)
-        .where(AdminReview.use_for_training.is_(True), Conversation.is_demo.is_(False))
+        select(Inquiry.content, AdminReview, ConversationExt.inquiry_no, turn)
+        .join(AIResponse, AIResponse.id == AdminReview.response_id)
+        .join(Inquiry, Inquiry.id == AIResponse.inquiry_id)
+        .join(ConversationExt, ConversationExt.conversation_id == Inquiry.conversation_id)
+        .where(AdminReview.use_for_training.is_(True), AdminReview.approved.is_(True),
+               ConversationExt.is_demo.is_(False))
         .order_by(AdminReview.reviewed_at)
     ).all()
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(COLUMNS)
-    for msg, rv, conv in rows:
-        turn = 1 + sum(1 for m in conv.messages if m.role == MessageRole.CUSTOMER and m.id < msg.id)
-        w.writerow(["", msg.content, rv.modified_category, rv.modified_intent, rv.modified_response,
-                    "admin_review", conv.inquiry_no, turn, to_kst(rv.reviewed_at).isoformat()])
+    for content, rv, inquiry_no, n in rows:
+        w.writerow(["", content, rv.modified_category, rv.modified_intent, rv.modified_response,
+                    "admin_review", inquiry_no, n, to_kst(rv.reviewed_at).isoformat()])
     return "﻿" + buf.getvalue()   # 엑셀에서 한글이 안 깨지게 BOM (train.csv와 같은 utf-8-sig)

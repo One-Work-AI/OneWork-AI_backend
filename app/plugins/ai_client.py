@@ -27,7 +27,7 @@ class AIRequest(BaseModel):
 
 
 class AISource(BaseModel):
-    document_key: str | None = Field(None, description="정책 문서 키 (백엔드 policy_document.doc_key와 같으면 자동 연결)")
+    document_key: str | None = Field(None, description="정책 문서 키 (팀 DB policy_document.document_key와 같으면 자동 연결)")
     chunk_index: int | None = Field(None, description="문서 안의 조각 순서 (0부터)")
     title: str
     text: str
@@ -41,6 +41,7 @@ class AIResult(BaseModel):
     intent_confidence: float | None = None
     answer: str = ""
     sources: list[AISource] = []
+    score_metric: str | None = Field(None, description="sources.score를 계산한 방식 (예: cosine_similarity)")
     model: str | None = None
     prompt_version: str | None = None
 

@@ -1,6 +1,7 @@
 # DAITDA CS 챗봇 — 백엔드
 
-FastAPI + SQLAlchemy + Alembic. 기본 DB는 SQLite (설치 없이 실행), `.env`만 바꾸면 PostgreSQL로 옮길 수 있습니다.
+FastAPI + SQLAlchemy + Alembic. DB는 **팀 PostgreSQL**(DB 담당자의 `schema.sql`로 만든 `cs_chatbot` 스키마)을 그대로 씁니다.
+팀 DB에 칸이 없는 백엔드 전용 정보만 `cs_backend` 스키마에 따로 둡니다 (아래 [팀 DB와 연결](#팀-db와-연결)).
 
 - 프론트엔드용 API 안내 (DAITDA 화면별): [docs/API.md](docs/API.md) — 서버 실행 후 http://localhost:8000/docs 에서도 확인
 - 모델·RAG 팀용 AI 서버 입출력 형식: [docs/AI_SERVER_CONTRACT.md](docs/AI_SERVER_CONTRACT.md)
@@ -12,23 +13,28 @@ FastAPI + SQLAlchemy + Alembic. 기본 DB는 SQLite (설치 없이 실행), `.en
 ```powershell
 cd backend
 uv sync                                # 가상환경 + 패키지 설치 (.venv)
-copy .env.example .env                 # 그다음 .env에서 JWT_SECRET을 무작위 값으로 바꾸기
+copy .env.example .env                 # 그다음 .env에서 PGPASSWORD(DB 폴더 .env와 같은 값)와 JWT_SECRET 바꾸기
 
-uv run alembic upgrade head            # DB 테이블 만들기
-uv run python -m scripts.seed_base     # 시연용 고객(김민지)·가짜 주문·관리자 만들기
+# 팀 DB에 접속되는지 먼저 확인 (Tailscale 켜기 → TcpTestSucceeded : True)
+Test-NetConnection 100.106.86.93 -Port 5433
+
+uv run alembic upgrade head            # 백엔드 전용 테이블(cs_backend) 만들기 — 팀 DB 테이블은 건드리지 않음
+uv run python -m scripts.seed_base     # 시연용 고객(김민지)·주문·관리자를 팀 DB에 만들기
 uv run python -m scripts.ingest_policies --dir policies_sample   # 샘플 정책 문서 (실제 PDF는 관리자 화면에서 등록)
 
 uv run uvicorn app.main:app --reload   # http://localhost:8000/docs
 ```
 
-시연용 문의 넣기(가짜 고객 여러 명)와 지우기:
+시연용 문의 넣기(가짜 고객 여러 명):
 
 ```powershell
 uv run python -m scripts.seed_demo --csv <validation_canonical_981.csv 경로> --n 20
-uv run python -m scripts.delete_demo
 ```
 
-테스트와 코드 검사 (임시 DB를 따로 쓰므로 실제 DB에 영향 없음):
+팀 DB는 상담 기록(AI 분석·검토 기록·전송된 답변)을 지울 수 없게 되어 있어서 시연 데이터 삭제 스크립트는 없습니다.
+시연 채팅에는 `is_demo` 표시가 붙어서 대시보드(`include_demo=false`)와 학습 데이터 내보내기에서 뺄 수 있습니다.
+
+테스트와 코드 검사 (테스트용 임시 PostgreSQL을 따로 띄우므로 팀 DB가 꺼져 있어도 되고, 팀 DB에 영향 없음):
 
 ```powershell
 uv run pytest -q
@@ -80,16 +86,16 @@ app/
   services/            실제 로직 (채팅, AI 처리 흐름, 자동답변 판단, 검토, 대시보드, 정책, 학습 데이터)
   plugins/             ★ 다른 팀 결과물이 나오면 바꾸는 곳
     ai_client.py         AI 서버 입출력 형식, mock/http 선택
-    order_source.py      주문 정보 가져오는 곳 (지금: 가짜 주문 → 나중에 쇼핑몰 DB)
+    order_source.py      주문 정보 가져오는 곳 (지금: 팀 DB의 orders / order_item)
     document_parser.py   PDF·TXT·MD → 글자
     chunker.py           정책 글자 조각 나누기
     mock_ai.py, keyword_retriever.py, http_ai.py
-migrations/            Alembic (DB 구조 변경 이력)
+migrations/            Alembic (백엔드 전용 cs_backend 테이블만)
 scripts/               시연용 계정, 정책 등록, 시연 문의, 가짜 AI 서버
 policies/              실제 정책 문서를 넣는 폴더
 policies_sample/       시험용 샘플 정책 문서 (실제 정책 아님)
 storage/policies/      등록한 정책 파일 (자동 생성)
-tests/                 자동 테스트
+tests/                 자동 테스트 (team_schema.sql = DB 담당자의 schema.sql 사본)
 ```
 
 ## 다른 팀 결과물이 나오면 바꿀 곳
@@ -98,10 +104,10 @@ tests/                 자동 테스트
 |---|---|
 | **AI 서버(모델·RAG)** 완성 | `.env`에서 `AI_MODE=http`, `AI_SERVER_URL=...`. 형식은 docs/AI_SERVER_CONTRACT.md |
 | **신뢰도 계산 방식·범위** | `.env`의 `REVIEW_MIN_CONFIDENCE` (지금 0.8) |
-| **쇼핑몰 DB** 준비 | `app/plugins/order_source.py`에 쇼핑몰 DB에서 주문을 읽는 클래스 추가 + `.env`의 `ORDER_SOURCE`. 백엔드 고객과 쇼핑몰 고객을 어떻게 맞출지 정해야 함 |
+| **다른 쇼핑몰 DB**에서 주문을 읽게 되면 | `app/plugins/order_source.py`에 클래스 추가 + `.env`의 `ORDER_SOURCE`. 고객을 어떻게 맞출지 정해야 함 |
 | **RAG 팀 조각 나누기 방식** | `app/plugins/chunker.py` |
 | **진짜 로그인** | `app/api/demo.py`만 바꾸면 됨 (나머지 API는 같은 토큰 사용) |
-| **PostgreSQL 사용** | `uv add "psycopg[binary]"` 후 `.env`의 `DATABASE_URL` 변경 → `alembic upgrade head` |
+| **팀 DB 구조(schema.sql)** 변경 | `app/models.py`의 팀 DB 테이블 정의를 맞추고, `tests/team_schema.sql`을 새 schema.sql로 바꾼 뒤 `pytest` |
 
 ## 팀에서 정한 사항
 
@@ -120,8 +126,8 @@ tests/                 자동 테스트
 | 관리자 검토 | 탭 검토대기 / 전체 / 답변완료, **최신순**. 상세에 이전 채팅 내역. 라벨 수정·학습 데이터·메모는 API 선택 항목으로 남김 |
 | 대시보드 | **전체 기간** 기준. 피크 타임은 가장 많이 들어온 2시간 구간과 그 구간 최다 유형만 계산 |
 | 정책 문서 | **PDF**. 새 PDF 등록, PDF 파일 교체, 문서 삭제(숨김), 미리보기. 시연용: AI 검색은 RAG 팀이 같은 PDF를 시연 전에 적재 |
-| 주문 정보 | 지금은 가짜 주문 테이블. 쇼핑몰 DB가 준비되면 `order_source.py`만 교체 |
-| 시연 데이터 | 김민지 + 가짜 고객 여러 명(박서연·김하늘·정다은·이준호·최지훈)과 가짜 주문 |
+| 주문 정보 | 팀 DB의 orders / order_item. 상품이 여러 개인 주문은 '첫 상품 외 N건'으로 표시 |
+| 시연 데이터 | 김민지 + 가짜 고객 여러 명(박서연·김하늘·정다은·이준호·최지훈)과 가짜 주문 (팀 DB에 저장) |
 | 제외 | 긴급도, 영어 문의, 만족도, 연락처 전체 보기, 고객 화면의 관련 정책, 계정 정보 탭, 관리자 비밀번호 로그인 |
 | 문의번호 | `Q20261002-001` (Q + 한국 날짜 + 하루 일련번호 3자리). 채팅 1개 = 문의번호 1개. CS 번호는 쓰지 않음 |
 
@@ -135,6 +141,29 @@ tests/                 자동 테스트
 - 고른 주문 상품은 채팅에 사본으로 저장합니다 (쇼핑몰 DB가 바뀌어도 지난 문의 기록 유지). AI 서버에도 선택 항목 `order`로 보냅니다.
 - AI 서버가 신뢰도를 주지 않으면 80% 기준을 확인할 수 없어서 검토로 보냅니다.
 - 정책 문서 키(doc_key)는 처음 등록한 파일 이름(확장자 제외)이며, PDF를 교체해도 바뀌지 않습니다. 이전 파일은 서버에 남깁니다.
+  교체하면 팀 DB 규칙에 따라 새 버전 행이 생겨서 문서 id가 바뀝니다 (이전 id로 불러도 사용 중인 버전).
 - 같은 파일 이름의 문서를 새로 등록하면 거절하고 'PDF 파일 교체'를 안내합니다.
 - 대시보드의 '전체 문의'는 검토대기 + 답변완료입니다 (상담 중인 채팅은 끝난 뒤에 셈, `chatting_now`로 따로 제공).
 - 학습 데이터 CSV는 train.csv와 같은 열에 문의번호와 질문 순서(turn)를 더하고, 시연용 데이터는 뺍니다.
+
+## 팀 DB와 연결
+
+DB 담당자의 `schema.sql`(cs_chatbot 스키마)을 기준으로 저장합니다. 백엔드는 팀 DB 테이블의 구조를 바꾸지 않습니다.
+
+| 화면의 개념 | 팀 DB (cs_chatbot) | 백엔드 전용 (cs_backend) |
+|---|---|---|
+| 채팅 1개 (문의번호 `Q20261002-001`) | `conversation` | `conversation_ext` — 문의번호, 고른 주문 상품(사본), 문의 유형, 5분 타이머, 종료 사유, 시연 표시 |
+| 고객 질문 | `inquiry` (문의번호-순서, 예: `Q20261002-001-01`) | |
+| AI 분류·자동답변 판단 | `ai_analysis` | `analysis_ext` — 검토 사유 코드, AI 오류 메시지, 응답 시간 |
+| AI 답변 초안 / 챗봇·상담원 답변 | `ai_response` (`status=SENT`가 고객에게 나간 답변) | |
+| 관리자 검토 | `admin_review` | |
+| 답변 근거 | `retrieved_policy` | |
+| 정책 문서 (PDF) | `policy_document`(버전별 1행), `policy_chunk` | `policy_file` — 파일 이름, 저장 이름, 크기, 설명 |
+| 주문 상품 목록 | `orders`, `order_item`, `product` | |
+
+- `conversation_ext`가 있는 채팅만 백엔드 화면에 나옵니다. 팀 샘플 데이터나 실습 스크립트(save_inquiry.py)로 만든 채팅은 보이지 않습니다.
+- '담당자에게 전달했어요' 안내는 저장하지 않고, 자동답변이 허용되지 않은 분석이 있으면 그 시각에 채팅에 표시합니다.
+- 팀 DB의 트리거 규칙을 그대로 따릅니다: 자동 전송은 분석에서 허용된 경우만, 관리자 전송은 같은 문구를 승인한 검토가 있어야 하고,
+  분석·검토 기록·전송된 답변·정책 버전은 고치거나 지울 수 없습니다.
+- AI 서버 오류처럼 초안이 없는 질문은 승인할 때 '(AI 답변 초안 없음)' 답변 행을 먼저 만들고 검토합니다 (팀 DB는 검토를 답변에 연결).
+- AI 근거는 팀 DB 정책 조각과 연결되는 것만 남습니다 (document_key + chunk_index, docs/AI_SERVER_CONTRACT.md).

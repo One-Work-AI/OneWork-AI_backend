@@ -31,7 +31,7 @@ def enter_as_customer(db: Session = Depends(get_db)):
 
 @router.post("/admin", response_model=TokenOut, summary="관리자로 체험 (비밀번호 없이 입장)")
 def enter_as_admin(db: Session = Depends(get_db)):
-    admin = db.scalar(select(AdminUser).where(AdminUser.username == get_settings().demo_admin_username))
+    admin = db.scalar(select(AdminUser).where(AdminUser.login_id == get_settings().demo_admin_username))
     if admin is None or not admin.is_active:
         raise AppError(503, "DEMO_NOT_READY", NOT_SEEDED)
     token, expires_in = create_access_token("admin", admin.id)

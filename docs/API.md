@@ -62,18 +62,19 @@
   "product_name": "무선 블루투스 이어폰 Pro", "category": "배송",
   "input_locked": false, "answering": false, "review_pending": false, "auto_close_at": "2026-10-02T05:19:00Z",
   "messages": [
-    {"id": 1, "role": "CUSTOMER", "content": "주문한 상품 언제 도착하나요?", "is_notice": false},
-    {"id": 2, "role": "BOT", "content": "주문하신 상품은 …", "is_notice": false}
+    {"id": "q31", "question_id": 31, "role": "CUSTOMER", "content": "주문한 상품 언제 도착하나요?", "is_notice": false},
+    {"id": "r18", "question_id": 31, "role": "BOT", "content": "주문하신 상품은 …", "is_notice": false}
   ]
 }
 ```
 - `role`: CUSTOMER(오른쪽 주황 말풍선) / BOT(AI 상담사) / ADMIN(상담원 답변)
+- `id`: 화면 목록용 고유 키 (문자열). `question_id`: 이 메시지가 속한 고객 질문 번호 (질문이면 자기 자신)
 - **입력창 잠금** `input_locked`: **상담이 종료됐을 때만** `true`
   → "채팅이 종료되었어요. 문의번호 #…로 저장되었어요" + **새 채팅하기 / 문의 내역 보기**
 - `answering: true`: AI가 답을 만드는 중 (입력은 그대로 가능, "답변 작성 중…" 표시 정도)
 - `review_pending: true`: 담당자 확인 중인 질문이 있음. 해당 질문 뒤에 `is_notice: true`인 BOT 안내
   ("담당자에게 전달했어요. 답변이 오면 이 채팅에서 알려드릴게요…")가 붙어 있고, **입력은 계속 가능**합니다.
-  관리자가 승인하면 **같은 채팅에 ADMIN 메시지**(상담원 답변, `reply_to_id` = 해당 질문)가 붙고 상담은 계속됩니다.
+  관리자가 승인하면 **같은 채팅에 ADMIN 메시지**(상담원 답변, `question_id` = 해당 질문)가 붙고 상담은 계속됩니다.
 - **5분 자동 종료**: `auto_close_at`까지 메시지가 없으면 서버가 종료합니다.
   챗봇·상담원 답변 후에만 세고, **검토 대기 중인 질문이 있으면 적용하지 않습니다** (`auto_close_at: null`).
   화면을 다시 그릴 때 `status`가 `CLOSED`인지 확인하면 됩니다.
@@ -135,9 +136,9 @@
 
 `review_question`은 검토대기 질문이고, 처리 후에는 처리한 질문입니다 (이때 `review_question.review`에 처리 기록).
 AI만 답한 문의면 `null`. 고객이 검토 중에도 계속 채팅할 수 있어서, 채팅 내역에는 그 질문 뒤의 대화도 함께 보입니다
-(`review_question.message_id`와 같은 `id`의 메시지를 강조하면 됩니다).
+(`messages` 중 `question_id`가 `review_question.question_id`와 같은 메시지를 강조하면 됩니다).
 
-**승인하기** `POST /api/admin/reviews/{문의번호}/questions/{review_question.message_id}/approve`
+**승인하기** `POST /api/admin/reviews/{문의번호}/questions/{review_question.question_id}/approve`
 ```json
 {"response_text": "최종 답변"}
 ```
@@ -166,11 +167,12 @@ AI만 답한 문의면 `null`. 고객이 검토 중에도 계속 채팅할 수 �
 | 선택한 문서 정보 | `GET /api/admin/policies/{id}` → 문서명 `title`, 설명 `description`, 파일 `filename`·`size_bytes`, 등록일 `created_at`, `version` |
 | PDF 미리보기 | `GET /api/admin/policies/{id}/file` (브라우저에서 보기) |
 | 파일 받기 | `GET /api/admin/policies/{id}/file?download=true` |
-| PDF 파일 교체 | `PUT /api/admin/policies/{id}/file` (multipart, 필드 `file`) → 버전 +1 |
+| PDF 파일 교체 | `PUT /api/admin/policies/{id}/file` (multipart, 필드 `file`) → 버전 +1, **응답의 `id`가 새 버전 id로 바뀜** |
 | 문서 삭제 | `DELETE /api/admin/policies/{id}` (목록에서 숨김) |
 | 새 PDF 등록 | `POST /api/admin/policies` (multipart: `file`, `title`(비우면 파일명), `description`) |
 
 - PDF만, 200MB까지. 같은 파일 이름의 문서가 있으면 409 → 'PDF 파일 교체'를 쓰면 됩니다.
+- 교체하면 팀 DB에 새 버전 행이 생겨서 `id`가 바뀝니다. 교체 후에는 목록을 다시 불러오세요 (이전 id로 불러도 사용 중인 버전을 돌려줍니다).
 - **시연 중에 새로 등록하거나 교체한 내용은 AI가 알지 못합니다** (AI 검색은 RAG 팀이 같은 PDF를 시연 전에 적재).
 
 ## 기타

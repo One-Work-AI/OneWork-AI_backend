@@ -2,9 +2,13 @@
 
 - 문서 1개 = PDF 파일 1개. 등록할 때 PDF에서 글자를 한 번 뽑아 둡니다 (mock 검색, 근거 연결용).
 - doc_key = 처음 등록한 파일 이름에서 확장자를 뺀 값 (예: delivery_policy). AI 서버와 문서를 맞추는 기준이며,
-  파일을 교체해도 바뀌지 않습니다.
-- 파일을 교체하면 버전이 1 올라가고 글자도 다시 뽑습니다. 이전 파일은 서버에 남겨 둡니다.
-- 문서 삭제는 숨김입니다 (지난 문의의 근거 기록을 지키기 위해).
+  파일을 교체해도 바뀌지 않습니다 (팀 DB policy_document.document_key).
+- 팀 DB 규칙상 정책 문서·조각은 고치지 않고 버전마다 새 행으로 남깁니다.
+  파일을 교체하면 같은 document_key로 새 버전 행(+ 조각)을 만들고 이전 버전은 is_active=false가 됩니다.
+  화면의 문서 id는 사용 중인 버전의 id라서 교체하면 바뀝니다 (이전 id로 불러도 사용 중인 버전을 돌려줌).
+- 문서 삭제는 숨김(is_active=false)입니다 (지난 문의의 근거 기록을 지키기 위해).
+- PDF 파일 정보(파일 이름, 저장 이름, 크기, 설명)는 백엔드 전용 policy_file 테이블에 둡니다.
+  팀에서 파일 없이 넣은 문서도 목록에는 나오지만 'PDF 보기'는 할 수 없습니다.
 
 ※ 시연용 방식: 실제 AI 검색은 RAG 팀이 같은 PDF를 시연 전에 한 번 적재해서 합니다.
   시연 중에 새로 등록하거나 교체한 내용은 AI 서버가 알지 못합니다.
@@ -18,13 +22,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.enums import CATEGORY_INTENTS
 from app.errors import AppError
-from app.models import PolicyChunk, PolicyDocument
+from app.models import PolicyChunk, PolicyDocument, PolicyFile
 from app.plugins import chunker, document_parser
 from app.schemas import PolicyDetail, PolicyListItem
 
@@ -55,20 +59,33 @@ def _save_file(raw: bytes, filename: str) -> str:
     return stored_name
 
 
-def _apply_content(doc: PolicyDocument, raw: bytes, filename: str) -> None:
+def _version_no(version: str) -> int:
+    return int(version) if version.isdigit() else 1
+
+
+def _next_version(db: Session, doc_key: str) -> str:
+    versions = db.scalars(select(PolicyDocument.version).where(PolicyDocument.document_key == doc_key)).all()
+    return str(max([_version_no(v) for v in versions] + [len(versions)]) + 1) if versions else "1"
+
+
+def _new_version(db: Session, doc_key: str, raw: bytes, filename: str, title: str, category: str | None,
+                 description: str | None) -> PolicyDocument:
+    """정책 문서 새 버전 행 + 조각 + 파일 정보 (이전 버전은 먼저 숨긴 뒤 호출)."""
     text = _extract(raw, filename)
-    doc.filename = Path(filename).name[:255]
-    doc.stored_name = _save_file(raw, filename)
-    doc.size_bytes = len(raw)
-    doc.content = text
-    doc.content_hash = hashlib.sha256(raw).hexdigest()
-    doc.chunks = [PolicyChunk(chunk_order=i, chunk_text=t)
+    name = Path(filename).name[:255]
+    doc = PolicyDocument(document_key=doc_key, title=title, category=category, content=text, source_file=name,
+                         version=_next_version(db, doc_key), is_active=True)
+    doc.file = PolicyFile(filename=name, stored_name=_save_file(raw, filename), size_bytes=len(raw),
+                          content_hash=hashlib.sha256(raw).hexdigest(), description=description)
+    doc.chunks = [PolicyChunk(chunk_order=i, chunk_text=t, category=category)
                   for i, t in enumerate(chunker.split_into_chunks(text, get_settings().chunk_max_chars))]
+    db.add(doc)
+    return doc
 
 
 def _active_by_key(db: Session, doc_key: str) -> PolicyDocument | None:
-    return db.scalar(select(PolicyDocument).where(PolicyDocument.doc_key == doc_key,
-                                                  PolicyDocument.is_deleted.is_(False)))
+    return db.scalar(select(PolicyDocument).where(PolicyDocument.document_key == doc_key,
+                                                  PolicyDocument.is_active.is_(True)))
 
 
 def register(db: Session, raw: bytes, filename: str, title: str | None = None, description: str | None = None,
@@ -76,19 +93,19 @@ def register(db: Session, raw: bytes, filename: str, title: str | None = None, d
     doc_key = Path(filename).stem
     if _active_by_key(db, doc_key) is not None:
         raise AppError(409, "DUPLICATE_POLICY", "같은 파일 이름의 문서가 이미 있습니다. 해당 문서에서 'PDF 파일 교체'를 사용하세요.")
-    doc = PolicyDocument(doc_key=doc_key, title=(title or "").strip()[:200] or doc_key,
-                         description=(description or "").strip() or None, category=category, version=1)
-    _apply_content(doc, raw, filename)
-    db.add(doc)
+    doc = _new_version(db, doc_key, raw, filename, title=(title or "").strip()[:200] or doc_key, category=category,
+                       description=(description or "").strip() or None)
     db.commit()
     return doc
 
 
 def replace_file(db: Session, doc: PolicyDocument, raw: bytes, filename: str) -> PolicyDocument:
-    _apply_content(doc, raw, filename)
-    doc.version += 1
+    doc.is_active = False
+    db.flush()   # 같은 문서 키는 사용 중인 버전이 하나만 있을 수 있음 (팀 DB 규칙)
+    new = _new_version(db, doc.document_key, raw, filename, title=doc.title, category=doc.category,
+                       description=doc.file.description if doc.file else None)
     db.commit()
-    return doc
+    return new
 
 
 # ───────────────────────── 화면 (관리자) ─────────────────────────
@@ -111,54 +128,69 @@ async def _read_upload(file: UploadFile) -> tuple[bytes, str]:
 
 
 def _get(db: Session, policy_id: int) -> PolicyDocument:
+    """문서 id → 사용 중인 버전 (교체 전 id로 불러도 같은 문서의 사용 중인 버전)."""
     doc = db.get(PolicyDocument, policy_id)
-    if doc is None or doc.is_deleted:
+    active = _active_by_key(db, doc.document_key) if doc else None
+    if active is None:
         raise AppError(404, "POLICY_NOT_FOUND", "정책 문서를 찾을 수 없습니다.")
-    return doc
+    return active
 
 
-def _list_item(doc: PolicyDocument) -> PolicyListItem:
-    return PolicyListItem(id=doc.id, title=doc.title, filename=doc.filename, size_bytes=doc.size_bytes,
-                          version=doc.version, created_at=doc.created_at, updated_at=doc.updated_at)
+def _first_created(db: Session, doc_keys: list[str]) -> dict:
+    """문서별 등록일 = 첫 버전을 만든 시각."""
+    return dict(db.execute(select(PolicyDocument.document_key, func.min(PolicyDocument.created_at))
+                           .where(PolicyDocument.document_key.in_(doc_keys))
+                           .group_by(PolicyDocument.document_key)).all())
 
 
-def to_detail(doc: PolicyDocument) -> PolicyDetail:
-    return PolicyDetail(**_list_item(doc).model_dump(), doc_key=doc.doc_key, description=doc.description,
+def _list_item(doc: PolicyDocument, created_at) -> PolicyListItem:
+    f = doc.file
+    return PolicyListItem(id=doc.id, title=doc.title, filename=f.filename if f else (doc.source_file or doc.document_key),
+                          size_bytes=f.size_bytes if f else 0, version=_version_no(doc.version),
+                          created_at=created_at or doc.created_at, updated_at=doc.created_at)
+
+
+def to_detail(db: Session, doc: PolicyDocument) -> PolicyDetail:
+    item = _list_item(doc, _first_created(db, [doc.document_key]).get(doc.document_key))
+    return PolicyDetail(**item.model_dump(), doc_key=doc.document_key,
+                        description=doc.file.description if doc.file else None,
                         text_extracted=bool(doc.content.strip()))
 
 
 def list_policies(db: Session, q: str | None) -> list[PolicyListItem]:
-    cond = [PolicyDocument.is_deleted.is_(False)]
+    cond = [PolicyDocument.is_active.is_(True)]
     if q and q.strip():
         cond.append(PolicyDocument.title.contains(q.strip()))
-    return [_list_item(d) for d in db.scalars(select(PolicyDocument).where(*cond).order_by(PolicyDocument.id))]
+    docs = db.scalars(select(PolicyDocument).where(*cond).order_by(PolicyDocument.id)).all()
+    first = _first_created(db, [d.document_key for d in docs])
+    return [_list_item(d, first.get(d.document_key)) for d in docs]
 
 
 def get_policy(db: Session, policy_id: int) -> PolicyDetail:
-    return to_detail(_get(db, policy_id))
+    return to_detail(db, _get(db, policy_id))
 
 
 async def upload_new(db: Session, file: UploadFile, title: str | None, description: str | None) -> PolicyDetail:
     raw, filename = await _read_upload(file)
-    return to_detail(register(db, raw, filename, title, description))
+    return to_detail(db, register(db, raw, filename, title, description))
 
 
 async def upload_replacement(db: Session, policy_id: int, file: UploadFile) -> PolicyDetail:
     doc = _get(db, policy_id)
     raw, filename = await _read_upload(file)
-    return to_detail(replace_file(db, doc, raw, filename))
+    return to_detail(db, replace_file(db, doc, raw, filename))
 
 
 def delete_policy(db: Session, policy_id: int) -> None:
     doc = _get(db, policy_id)
-    doc.is_deleted = True
+    doc.is_active = False
     db.commit()
 
 
 def get_file(db: Session, policy_id: int) -> tuple[PolicyDocument, Path]:
     doc = _get(db, policy_id)
-    path = _storage_dir() / doc.stored_name
-    if not path.exists():
+    path = _storage_dir() / doc.file.stored_name if doc.file else None
+    if path is None or not path.exists():
         raise AppError(404, "POLICY_FILE_MISSING", "서버에 파일이 없습니다.")
     return doc, path
 
@@ -187,7 +219,7 @@ def ingest_directory(db: Session, root: Path) -> IngestReport:
         raw = path.read_bytes()
         existing = _active_by_key(db, path.stem)
         if existing is not None:
-            if existing.content_hash == hashlib.sha256(raw).hexdigest():
+            if existing.file and existing.file.content_hash == hashlib.sha256(raw).hexdigest():
                 report.unchanged.append(path.stem)
             else:
                 replace_file(db, existing, raw, path.name)

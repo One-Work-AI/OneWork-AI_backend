@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.config import Settings
 from app.db import SessionLocal
 from app.enums import ReviewReason
-from app.models import Conversation, Customer
+from app.models import AdminReview, AIResponse, Conversation, ConversationExt, Customer, Inquiry, RetrievedPolicy
 from app.plugins.ai_client import AIResult, AISource
 from app.security import create_access_token
 from app.services.decision import decide
@@ -19,6 +19,10 @@ from tests.conftest import make_pdf
 AUTO_Q = "배송 기간이 며칠이나 걸리나요?"            # 키워드 2개 → 0.95 → 자동답변
 REVIEW_Q = "안녕하세요 그냥 여쭤볼 게 있어서요"       # 키워드 0개 → 0.4 → 검토
 EARPHONE = "20241210-1234567"                          # 시연 고객(김민지)의 가짜 주문
+
+
+def _conv(db, no) -> Conversation:
+    return db.scalar(select(Conversation).join(Conversation.ext).where(ConversationExt.inquiry_no == no))
 
 
 def _start(client, headers, content, order_no=None, wait=True):
@@ -34,7 +38,7 @@ def _send(client, headers, no, content, wait=True):
 
 
 def _approve(client, admin_headers, no, **body):
-    qid = client.get(f"/api/admin/reviews/{no}", headers=admin_headers).json()["review_question"]["message_id"]
+    qid = client.get(f"/api/admin/reviews/{no}", headers=admin_headers).json()["review_question"]["question_id"]
     return client.post(f"/api/admin/reviews/{no}/questions/{qid}/approve", headers=admin_headers,
                        json={"response_text": "담당자 답변입니다.", **body})
 
@@ -111,7 +115,7 @@ def test_review_keeps_chat_open_and_admin_answer_joins_chat(client, customer_hea
     assert r.json()["chat_status"] == "OPEN" and r.json()["status_code"] == "CHATTING"
 
     d = client.get(f"/api/conversations/{no}", headers=customer_headers).json()
-    assert d["messages"][-1]["role"] == "ADMIN" and d["messages"][-1]["reply_to_id"] == d["messages"][0]["id"]
+    assert d["messages"][-1]["role"] == "ADMIN" and d["messages"][-1]["question_id"] == d["messages"][0]["question_id"]
     assert d["status"] == "OPEN" and d["input_locked"] is False and d["auto_close_at"] is not None   # 계속 채팅, 타이머 재시작
     assert d["admin_answer"] == "안녕하세요, 어떤 점이 궁금하신가요?"
     assert _send(client, customer_headers, no, "감사합니다 배송 기간 며칠인가요?").status_code == 201
@@ -122,24 +126,23 @@ def test_review_keeps_chat_open_and_admin_answer_joins_chat(client, customer_hea
 
 
 def test_questions_answered_in_order(client, customer_headers):
-    from app.db import SessionLocal as S
-    from app.enums import MessageRole, QuestionStatus
-    from app.models import Message
     from app.services.pipeline import process_question
 
     no = _start(client, customer_headers, AUTO_Q)["inquiry_no"]
-    with S() as db:   # 앞 답변을 기다리지 않고 두 질문을 연달아 보낸 상태를 만듦
-        conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == no))
-        for text in ("결제 수단은 뭐가 있나요?", "배송지 변경하고 싶어요"):
-            conv.messages.append(Message(role=MessageRole.CUSTOMER, content=text,
-                                         question_status=QuestionStatus.PROCESSING))
+    with SessionLocal() as db:   # 앞 답변을 기다리지 않고 두 질문을 연달아 보낸 상태를 만듦
+        conv = _conv(db, no)
+        for turn, text in enumerate(("결제 수단은 뭐가 있나요?", "배송지 변경하고 싶어요"), start=2):
+            db.add(Inquiry(inquiry_no=f"{no}-{turn:02d}", conversation_id=conv.id, customer_id=conv.customer_id,
+                           content=text))
+            db.flush()
+        second_id = db.scalar(select(Inquiry.id).where(Inquiry.conversation_id == conv.id).order_by(Inquiry.id.desc()))
         db.commit()
-        second_id = conv.messages[-1].id
     process_question(second_id)                       # 뒤 질문으로 불러도 앞 질문부터 처리
     msgs = client.get(f"/api/conversations/{no}", headers=customer_headers).json()["messages"]
-    questions = [m["id"] for m in msgs if m["role"] == "CUSTOMER"]
-    answers = [m["reply_to_id"] for m in msgs if m["role"] == "BOT"]
+    questions = [m["question_id"] for m in msgs if m["role"] == "CUSTOMER"]
+    answers = [m["question_id"] for m in msgs if m["role"] == "BOT"]
     assert answers == questions                       # 보낸 순서대로 답변
+    assert len({m["id"] for m in msgs}) == len(msgs)  # 화면 목록 키는 겹치지 않음
 
 
 def test_new_chat_and_close_button(client, customer_headers):
@@ -160,21 +163,21 @@ def test_new_chat_and_close_button(client, customer_headers):
 def test_idle_timeout_only_while_chatting_with_bot(client, customer_headers):
     chatting = _start(client, customer_headers, AUTO_Q)["inquiry_no"]
     with SessionLocal() as db:
-        conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == chatting))
-        conv.last_answer_at = conv.last_answer_at - timedelta(minutes=6)
+        ext = _conv(db, chatting).ext
+        ext.last_answer_at = ext.last_answer_at - timedelta(minutes=6)
         db.commit()
     d = client.get(f"/api/conversations/{chatting}", headers=customer_headers).json()
     assert d["status"] == "CLOSED" and d["close_reason"] == "TIMEOUT"
 
     reviewing = _start(client, customer_headers, REVIEW_Q)["inquiry_no"]
     with SessionLocal() as db:
-        conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == reviewing))
-        conv.messages[0].created_at = conv.messages[0].created_at - timedelta(hours=2)   # 2시간째 검토 대기
+        q = _conv(db, reviewing).inquiries[0]
+        q.created_at = q.created_at - timedelta(hours=2)                       # 2시간째 검토 대기
         db.commit()
     _send(client, customer_headers, reviewing, AUTO_Q)                        # 챗봇 답변이 붙어도
     with SessionLocal() as db:
-        conv = db.scalar(select(Conversation).where(Conversation.inquiry_no == reviewing))
-        conv.last_answer_at = conv.last_answer_at - timedelta(minutes=30)
+        ext = _conv(db, reviewing).ext
+        ext.last_answer_at = ext.last_answer_at - timedelta(minutes=30)
         db.commit()
     d = client.get(f"/api/conversations/{reviewing}", headers=customer_headers).json()
     assert d["status"] == "OPEN" and d["review_pending"] is True              # 검토 대기 중이라 자동 종료 안 됨
@@ -292,13 +295,22 @@ def test_policies_pdf(client, admin_headers):
     new_pdf = make_pdf("Delivery policy v2")
     r = client.put(f"/api/admin/policies/{pid}/file", headers=admin_headers,
                    files={"file": ("delivery_policy_v2.pdf", new_pdf, "application/pdf")})
-    assert r.json()["version"] == 2 and r.json()["filename"] == "delivery_policy_v2.pdf"
-    assert r.json()["doc_key"] == "delivery_policy"                  # 파일을 바꿔도 문서 키는 그대로
-    assert client.get(f"/api/admin/policies/{pid}/file", headers=admin_headers).content == new_pdf
+    v2 = r.json()
+    assert v2["version"] == 2 and v2["filename"] == "delivery_policy_v2.pdf"
+    assert v2["doc_key"] == "delivery_policy"                        # 파일을 바꿔도 문서 키는 그대로
+    assert v2["id"] != pid and v2["created_at"] == p["created_at"]   # 새 버전 행, 등록일은 처음 등록한 날
+    assert v2["description"] == "출고 기준일, 배송 소요 기간"
+    old_id_file = client.get(f"/api/admin/policies/{pid}/file", headers=admin_headers)
+    assert old_id_file.content == new_pdf                            # 이전 id로 불러도 사용 중인 버전
+    ids = [x["id"] for x in client.get("/api/admin/policies", headers=admin_headers).json()]
+    assert v2["id"] in ids and pid not in ids
 
-    assert client.delete(f"/api/admin/policies/{pid}", headers=admin_headers).status_code == 204
+    assert client.delete(f"/api/admin/policies/{v2['id']}", headers=admin_headers).status_code == 204
     assert client.get(f"/api/admin/policies/{pid}", headers=admin_headers).status_code == 404
-    assert pid not in [p["id"] for p in client.get("/api/admin/policies", headers=admin_headers).json()]
+    assert v2["id"] not in [x["id"] for x in client.get("/api/admin/policies", headers=admin_headers).json()]
+    again = client.post("/api/admin/policies", headers=admin_headers,
+                        files={"file": ("delivery_policy.pdf", pdf, "application/pdf")})
+    assert again.status_code == 201 and again.json()["version"] == 3   # 삭제 뒤 다시 등록하면 다음 버전
 
 
 def test_training_export_and_meta(client, admin_headers, customer_headers):
@@ -318,6 +330,42 @@ def test_removed_features(client, customer_headers, admin_headers):
     assert client.post("/api/admin/policies/1/attachments", headers=admin_headers).status_code == 404
     no = client.get("/api/conversations", headers=customer_headers).json()["items"][0]["inquiry_no"]
     assert client.delete(f"/api/conversations/{no}", headers=customer_headers).status_code == 405   # 고객 삭제 없음
+
+
+# ───────── 팀 DB에 남는 기록 ─────────
+
+def test_team_db_records(client, customer_headers, admin_headers):
+    auto_no = _start(client, customer_headers, AUTO_Q)["inquiry_no"]
+    review_no = _start(client, customer_headers, REVIEW_Q)["inquiry_no"]
+    assert _approve(client, admin_headers, review_no, intent="고객 서비스 문의").status_code == 200
+    with SessionLocal() as db:
+        auto_q = _conv(db, auto_no).inquiries[0]
+        assert auto_q.inquiry_no == f"{auto_no}-01" and auto_q.status == "AUTO_ANSWERED"
+        sent = db.scalar(select(AIResponse).where(AIResponse.inquiry_id == auto_q.id))
+        assert sent.status == "SENT" and sent.sent_automatically and sent.final_response_text == sent.response_text
+        assert db.scalar(select(RetrievedPolicy).where(RetrievedPolicy.response_id == sent.id)) is not None  # 근거
+
+        review_q = _conv(db, review_no).inquiries[0]
+        assert review_q.status == "COMPLETED"                                    # 팀 DB 트리거와 같은 값
+        r = db.scalar(select(AIResponse).where(AIResponse.inquiry_id == review_q.id))
+        rv = db.scalar(select(AdminReview).where(AdminReview.response_id == r.id))
+        assert r.status == "SENT" and not r.sent_automatically and r.final_response_text == rv.modified_response
+        assert rv.original_response == r.response_text and rv.modified_intent == "고객 서비스 문의"
+
+
+def test_only_backend_chats_are_listed(client, customer_headers, admin_headers):
+    """팀 샘플·실습 스크립트로 만든 채팅(conversation_ext 없음)은 백엔드 화면에 나오지 않음."""
+    with SessionLocal() as db:
+        cid = db.scalar(select(Customer.id).where(Customer.phone == "01012345678"))
+        conv = Conversation(customer_id=cid, title="실습")
+        db.add(conv)
+        db.flush()
+        db.add(Inquiry(inquiry_no="PRACTICE-001", conversation_id=conv.id, customer_id=cid, content="실습 문의"))
+        db.commit()
+    mine = client.get("/api/conversations", headers=customer_headers, params={"q": "실습 문의"}).json()
+    assert mine["items"] == []
+    found = client.get("/api/admin/reviews", headers=admin_headers, params={"tab": "all", "q": "실습 문의"}).json()
+    assert found["items"] == []
 
 
 # ───────── 자동답변 판단 규칙 ─────────

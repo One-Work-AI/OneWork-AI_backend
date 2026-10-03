@@ -41,6 +41,7 @@ AI 서버는 **분류 → 정책 검색 → 답변 생성을 한 번에** 해서
   "sources": [
     {"document_key": "refund_policy", "chunk_index": 2, "title": "환불 정책", "text": "…", "score": 0.82}
   ],
+  "score_metric": "cosine_similarity",
   "model": "EXAONE-3.5-7.8B + LoRA(run_final)",
   "prompt_version": "v1"
 }
@@ -54,9 +55,10 @@ AI 서버는 **분류 → 정책 검색 → 답변 생성을 한 번에** 해서
 | `answer` | ✅ | 고객에게 보낼 답변. 검토로 가는 경우에는 관리자 화면의 'AI 답변 초안'으로 보여줍니다 |
 | `sources` | ✅ (빈 배열 가능) | 답변 근거로 검색한 정책 조각, 관련도 높은 순서 |
 | `sources[].document_key` | 권장 | 정책 문서 키 = **PDF 파일 이름에서 확장자를 뺀 값** (예: `delivery_policy.pdf` → `delivery_policy`) |
-| `sources[].chunk_index` | 선택 | 문서 안의 조각 순서 (0부터) |
-| `sources[].title`, `text` | ✅ | 관리자 상세 API에 기록됩니다 (고객 화면에는 표시하지 않음) |
+| `sources[].chunk_index` | 권장 | 문서 안의 조각 순서 (0부터) |
+| `sources[].title`, `text` | ✅ | 형식 확인용 (고객 화면에는 표시하지 않음) |
 | `sources[].score` | 권장 | 검색 관련도 0~1 |
+| `score_metric` | 선택 | `score`를 계산한 방식 (예: `cosine_similarity`). 팀 DB `retrieved_policy.score_metric`에 기록 |
 | `model`, `prompt_version` | 선택 | 기록용 |
 
 ### 카테고리 / 의도 (학습 데이터와 같은 값)
@@ -81,7 +83,9 @@ AI 서버는 **분류 → 정책 검색 → 답변 생성을 한 번에** 해서
 
 - 정책 문서는 PDF입니다. 관리자 화면에서 등록·교체할 수 있지만, **AI 서버에 자동으로 전달되지는 않습니다.**
 - 시연 전에 **같은 PDF 파일들**을 RAG 팀이 한 번 적재해 주세요. 시연 중에는 교체하지 않는 것으로 정했습니다.
-- 파일 이름(확장자 제외)을 `document_key`로 돌려주면 백엔드의 문서와 자동 연결됩니다.
+- 파일 이름(확장자 제외)을 `document_key`로, 조각 순서를 `chunk_index`로 돌려주면 팀 DB의 정책 조각과 자동 연결됩니다.
+  근거는 팀 DB `retrieved_policy`에 정책 조각 번호로만 저장되므로, **둘 다 맞아야 관리자 화면에 근거가 남습니다.**
+  조각 나누기 방식(`CHUNK_MAX_CHARS`, `app/plugins/chunker.py`)을 RAG 팀과 맞춰 주세요.
 
 ## 시험해 보기
 

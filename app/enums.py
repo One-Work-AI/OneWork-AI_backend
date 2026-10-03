@@ -39,7 +39,21 @@ class QuestionStatus(str, Enum):
     ADMIN_ANSWERED = "ADMIN_ANSWERED"    # 관리자가 검토 후 답변
 
 
-ANSWERED_QUESTION_STATUSES = (QuestionStatus.AUTO_ANSWERED, QuestionStatus.ADMIN_ANSWERED)
+# 팀 DB inquiry.status → 질문 상태
+QUESTION_STATUS_FROM_DB: dict[str, QuestionStatus] = {
+    "RECEIVED": QuestionStatus.PROCESSING,
+    "PROCESSING": QuestionStatus.PROCESSING,
+    "AUTO_ANSWERED": QuestionStatus.AUTO_ANSWERED,
+    "REVIEW_PENDING": QuestionStatus.REVIEW_PENDING,
+    "FAILED": QuestionStatus.REVIEW_PENDING,       # 백엔드는 쓰지 않지만, 생기면 사람이 봐야 하므로 검토대기
+    "COMPLETED": QuestionStatus.ADMIN_ANSWERED,
+}
+
+
+def db_statuses(status: QuestionStatus) -> list[str]:
+    """질문 상태 → 해당하는 팀 DB inquiry.status 값 (SQL 조건용)."""
+    return [k for k, v in QUESTION_STATUS_FROM_DB.items() if v == status]
+
 
 QUESTION_STATUS_LABELS = {
     QuestionStatus.PROCESSING: "AI 처리 중",

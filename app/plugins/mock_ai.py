@@ -1,7 +1,7 @@
 """가짜 AI (.env: AI_MODE=mock) — 모델 서버 없이 전체 흐름을 개발·시연하기 위한 것.
 
 - 분류: 키워드 규칙
-- 검색: keyword_retriever (백엔드 DB에 적재한 정책 문서)
+- 검색: keyword_retriever (팀 DB에 등록된 정책 문서)
 - 답변: 가장 관련 있는 정책 조각의 앞부분을 붙여서 만듦
 - 이전 대화(history)는 쓰지 않음
 실제 모델 품질과는 관계없으니 점수·답변 내용으로 모델을 평가하지 마세요.
@@ -73,6 +73,7 @@ class MockAIClient:
             answer=answer,
             sources=[AISource(document_key=h.document_key, chunk_index=h.chunk_index,
                               title=h.title, text=h.text, score=h.score) for h in hits],
+            score_metric="keyword_overlap",
             model="mock",
             prompt_version="mock-v1",
         )

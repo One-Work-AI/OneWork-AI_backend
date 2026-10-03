@@ -1,35 +1,51 @@
-"""Alembic 설정 — DB 주소는 alembic.ini가 아니라 .env의 DATABASE_URL을 씁니다."""
+"""Alembic 설정 — 백엔드 전용 cs_backend 스키마만 관리합니다.
+
+- DB 주소는 alembic.ini가 아니라 .env(DATABASE_URL 또는 PG* 값)를 씁니다.
+- 팀 DB 테이블(cs_chatbot 스키마)은 DB 담당자의 schema.sql이 만들고 관리하므로 여기서 건드리지 않습니다.
+- 버전 기록 테이블(alembic_version)도 cs_backend 스키마에 둡니다.
+"""
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool, text
 
-from app import models  # noqa: F401  (테이블 정의를 불러와야 자동 생성이 동작)
+from app import models  # noqa: F401  (테이블 정의를 불러와야 비교가 동작)
 from app.config import get_settings
-from app.db import Base
+from app.db import BACKEND_SCHEMA, TEAM_SCHEMA, Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-_is_sqlite = get_settings().database_url.startswith("sqlite")
+
+
+def include_object(obj, name, type_, reflected, compare_to):
+    # 백엔드 전용 스키마의 테이블만 비교·생성
+    if type_ == "table":
+        return obj.schema == BACKEND_SCHEMA
+    return True
+
+
+def _configure(**kw) -> None:
+    context.configure(target_metadata=target_metadata, include_schemas=True, include_object=include_object,
+                      version_table_schema=BACKEND_SCHEMA, **kw)
 
 
 def run_migrations_offline() -> None:
-    context.configure(url=config.get_main_option("sqlalchemy.url"), target_metadata=target_metadata,
-                      literal_binds=True, dialect_opts={"paramstyle": "named"}, render_as_batch=_is_sqlite)
+    _configure(url=get_settings().sqlalchemy_url(), literal_binds=True, dialect_opts={"paramstyle": "named"})
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(config.get_section(config.config_ini_section, {}),
-                                     prefix="sqlalchemy.", poolclass=pool.NullPool)
-    with connectable.connect() as connection:
-        # SQLite는 컬럼 변경을 직접 못 해서 batch 모드로 (PostgreSQL에서는 영향 없음)
-        context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=_is_sqlite)
+    engine = create_engine(get_settings().sqlalchemy_url(), poolclass=pool.NullPool)
+    with engine.connect() as connection:
+        if connection.execute(text("SELECT 1 FROM pg_namespace WHERE nspname = :s"), {"s": TEAM_SCHEMA}).first() is None:
+            raise SystemExit(f"팀 DB 스키마({TEAM_SCHEMA})가 없습니다. DB 담당자의 schema.sql(init_db.py)로 먼저 만들어 주세요.")
+        connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {BACKEND_SCHEMA}"))
+        connection.commit()
+        _configure(connection=connection)
         with context.begin_transaction():
             context.run_migrations()
 

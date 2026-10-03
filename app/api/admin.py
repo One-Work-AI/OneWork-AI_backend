@@ -65,11 +65,11 @@ def review_detail(inquiry_no: str, db: Session = Depends(get_db), _: AdminUser =
     return reviews.get_detail(db, inquiry_no)
 
 
-@router.post("/reviews/{inquiry_no}/questions/{message_id}/approve", response_model=ReviewDetail,
-             summary="승인하기 (최종 답변 → 고객에게 전달, 상담 종료)")
-def approve(inquiry_no: str, message_id: int, data: ApproveRequest, db: Session = Depends(get_db),
+@router.post("/reviews/{inquiry_no}/questions/{question_id}/approve", response_model=ReviewDetail,
+             summary="승인하기 (최종 답변 → 같은 채팅에 상담원 답변으로 전달, 상담은 계속)")
+def approve(inquiry_no: str, question_id: int, data: ApproveRequest, db: Session = Depends(get_db),
             admin: AdminUser = Depends(get_current_admin)):
-    return reviews.approve(db, inquiry_no, message_id, admin, data)
+    return reviews.approve(db, inquiry_no, question_id, admin, data)
 
 
 # ───────── 운영 대시보드 ─────────
@@ -101,7 +101,8 @@ def policy_detail(policy_id: int, db: Session = Depends(get_db), _: AdminUser = 
     return policies.get_policy(db, policy_id)
 
 
-@router.put("/policies/{policy_id}/file", response_model=PolicyDetail, summary="PDF 파일 교체 (버전 +1)")
+@router.put("/policies/{policy_id}/file", response_model=PolicyDetail,
+            summary="PDF 파일 교체 (버전 +1, 새 버전의 id로 바뀜)")
 async def replace_policy_file(policy_id: int, file: UploadFile = File(...), db: Session = Depends(get_db),
                               _: AdminUser = Depends(get_current_admin)):
     return await policies.upload_replacement(db, policy_id, file)
@@ -113,7 +114,7 @@ def policy_file(policy_id: int, download: bool = Query(False, description="true�
                 db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
     doc, path = policies.get_file(db, policy_id)
     media = "application/pdf" if path.suffix.lower() == ".pdf" else "application/octet-stream"
-    return FileResponse(path, filename=doc.filename, media_type=media,
+    return FileResponse(path, filename=doc.file.filename, media_type=media,
                         content_disposition_type="attachment" if download else "inline")
 
 

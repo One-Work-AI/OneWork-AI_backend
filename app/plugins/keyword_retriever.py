@@ -37,14 +37,14 @@ def search(db: Session, query: str, top_k: int = 3) -> list[Hit]:
     if not stems:
         return []
     rows = db.execute(
-        select(PolicyChunk, PolicyDocument)
+        select(PolicyChunk.chunk_order, PolicyChunk.chunk_text, PolicyDocument.document_key, PolicyDocument.title)
         .join(PolicyDocument, PolicyChunk.policy_document_id == PolicyDocument.id)
-        .where(PolicyDocument.is_deleted.is_(False))
+        .where(PolicyDocument.is_active.is_(True))
     ).all()
     hits = []
-    for chunk, doc in rows:
-        haystack = (doc.title + " " + chunk.chunk_text).lower()
+    for chunk_order, chunk_text, document_key, title in rows:
+        haystack = (title + " " + chunk_text).lower()
         score = sum(1 for s in stems if s in haystack) / len(stems)
-        hits.append(Hit(doc.doc_key, chunk.chunk_order, doc.title, chunk.chunk_text, round(score, 4)))
+        hits.append(Hit(document_key, chunk_order, title, chunk_text, round(score, 4)))
     hits.sort(key=lambda h: -h.score)
     return hits[:top_k]

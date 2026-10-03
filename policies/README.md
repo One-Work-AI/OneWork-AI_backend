@@ -4,6 +4,6 @@
   예: `policies/환불/refund_policy.md`
 - 지금 읽을 수 있는 형식: `.txt`, `.md` (다른 형식은 `app/plugins/document_parser.py`에 읽는 함수를 추가)
 - 넣은 뒤 실행: `python -m scripts.ingest_policies --dir policies`
-- AI 서버(RAG 팀)도 **같은 폴더 구조·같은 파일 이름**으로 적재하면 근거 문서가 자동으로 연결됩니다 (doc_key = `환불/refund_policy`).
+- AI 서버(RAG 팀)도 **같은 폴더 구조·같은 파일 이름**으로 적재하면 근거 문서가 자동으로 연결됩니다 (doc_key = 파일 이름에서 확장자만 뺀 `refund_policy`, 폴더 이름은 들어가지 않음).
 
 이 README 파일은 적재 대상에서 제외됩니다.
