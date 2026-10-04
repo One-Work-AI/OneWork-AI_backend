@@ -10,10 +10,10 @@
 
 | 버튼 | API |
 |---|---|
-| 고객으로 체험 | `POST /api/demo/customer` → 시연 고객(김민지) 토큰 |
+| 고객으로 체험 | `POST /api/demo/customer` → 시연 고객(팀 DB의 '테스트고객') 토큰 |
 | 관리자로 체험 | `POST /api/demo/admin` → 관리자 토큰 (비밀번호 없음) |
 
-응답: `{"access_token": "...", "role": "customer", "name": "김민지"}` — `name`은 왼쪽 아래 "김민지님"에 표시
+응답: `{"access_token": "...", "role": "customer", "name": "테스트고객"}` — `name`은 왼쪽 아래 "테스트고객님"에 표시
 
 - `st.session_state`에 토큰을 넣어 두고 모든 요청에 `Authorization: Bearer {access_token}`
 - **로그아웃 = 토큰을 지우고 로그인 화면으로.** 이메일·비밀번호 입력란은 백엔드와 연결되지 않습니다 (체험 버튼만 동작).
@@ -41,13 +41,12 @@
 **화면을 열 때** `GET /api/conversations/current` → 진행 중인 채팅이 있으면 이어서 보여주고, 없으면 `null`
 (인사말 "안녕하세요, daitda 고객센터 AI 상담사예요…"와 추천 질문 버튼은 화면에서 고정 문구로)
 
-**문의할 주문 상품** `GET /api/orders` → `[{"order_no": "20241210-1234567", "product_name": "무선 블루투스 이어폰 Pro"}, …]`
-맨 위에 "선택 안 함"을 화면에서 추가
-
 **첫 메시지 보내기** `POST /api/conversations?wait=true`
 ```json
-{"content": "주문한 상품 언제 도착하나요?", "order_no": "20241210-1234567"}
+{"content": "주문한 상품 언제 도착하나요?"}
 ```
+※ 화면에서 '문의할 주문 상품' 선택을 뺐으므로 `order_no`는 보내지 않습니다 (그러면 `product_name`은 항상 `null`).
+  주문 목록 `GET /api/orders`와 `order_no`는 선택 항목으로 API에 남아 있어서, 나중에 다시 넣을 때 그대로 쓸 수 있습니다.
 - 상품을 '선택 안 함'이면 `order_no`를 빼면 됩니다. 고른 상품은 채팅 위에 `product_name`으로 표시
 - `wait=true`면 AI 답변까지 기다렸다가 채팅 전체를 돌려줍니다 (`st.spinner`로 감싸기)
 
@@ -164,12 +163,12 @@ AI만 답한 문의면 `null`. 고객이 검토 중에도 계속 채팅할 수 �
 | 화면 | API |
 |---|---|
 | 정책 문서 목록 | `GET /api/admin/policies?q=` → `title`, `filename`, `size_bytes`, `created_at` |
-| 선택한 문서 정보 | `GET /api/admin/policies/{id}` → 문서명 `title`, 설명 `description`, 파일 `filename`·`size_bytes`, 등록일 `created_at`, `version` |
+| 선택한 문서 정보 | `GET /api/admin/policies/{id}` → 문서명 `title`, 파일 `filename`·`size_bytes`, 등록일 `created_at`, `version` (설명 칸은 DB에 없어서 뺐음) |
 | PDF 미리보기 | `GET /api/admin/policies/{id}/file` (브라우저에서 보기) |
 | 파일 받기 | `GET /api/admin/policies/{id}/file?download=true` |
 | PDF 파일 교체 | `PUT /api/admin/policies/{id}/file` (multipart, 필드 `file`) → 버전 +1, **응답의 `id`가 새 버전 id로 바뀜** |
 | 문서 삭제 | `DELETE /api/admin/policies/{id}` (목록에서 숨김) |
-| 새 PDF 등록 | `POST /api/admin/policies` (multipart: `file`, `title`(비우면 파일명), `description`) |
+| 새 PDF 등록 | `POST /api/admin/policies` (multipart: `file`, `title`(비우면 파일명)) |
 
 - PDF만, 200MB까지. 같은 파일 이름의 문서가 있으면 409 → 'PDF 파일 교체'를 쓰면 됩니다.
 - 교체하면 팀 DB에 새 버전 행이 생겨서 `id`가 바뀝니다. 교체 후에는 목록을 다시 불러오세요 (이전 id로 불러도 사용 중인 버전을 돌려줍니다).

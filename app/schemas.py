@@ -160,7 +160,6 @@ class AnalysisOut(BaseModel):
     intent_confidence: float | None
     auto_response_allowed: bool
     reasons: list[ReasonOut]
-    error_message: str | None
     analysis_model: str | None
 
 
@@ -169,7 +168,6 @@ class AIDraftOut(BaseModel):
     generation_model: str | None
     prompt_version: str | None
     sent_automatically: bool
-    latency_ms: int | None
 
 
 class RetrievedOut(BaseModel):
@@ -319,7 +317,6 @@ class PolicyListItem(BaseModel):
 
 class PolicyDetail(PolicyListItem):
     doc_key: str
-    description: str | None
     text_extracted: bool = Field(description="PDF에서 글자를 뽑았는지 (스캔본이면 false)")
 
 

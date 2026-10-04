@@ -27,11 +27,10 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me"
     jwt_expire_minutes: int = 480
 
-    # 시연용 계정 (scripts.seed_base 가 이 값으로 만듦)
-    demo_customer_name: str = "김민지"
-    demo_customer_phone: str = "01012345678"
-    demo_customer_email: str = "kimminji@email.com"
-    demo_admin_username: str = "admin"
+    # 체험 입장 계정 — 팀 DB에 있는 가상 계정을 그대로 씀 (없을 때만 scripts.seed_base 가 이 값으로 만듦)
+    demo_customer_email: str = "demo@example.invalid"   # 팀 샘플 '테스트고객'
+    demo_customer_name: str = "테스트고객"
+    demo_admin_username: str = "extra_demo_admin"       # 팀 확장 샘플 관리자 (admin_user.login_id)
     demo_admin_name: str = "관리자"
 
     # AI 서버
