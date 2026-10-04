@@ -20,13 +20,15 @@ copy .env.example .env                 # 그다음 .env에서 PGPASSWORD(DB 폴�
 Test-NetConnection 100.106.86.93 -Port 5433
 
 uv run alembic upgrade head            # 백엔드 전용 테이블(cs_backend) 만들기 — 팀 DB 테이블은 건드리지 않음
-uv run python -m scripts.seed_base     # 시연용 고객(김민지)·주문·관리자를 팀 DB에 만들기
-uv run python -m scripts.ingest_policies --dir policies_sample   # 샘플 정책 문서 (실제 PDF는 관리자 화면에서 등록)
+uv run python -m scripts.seed_base     # 체험 계정 확인 (팀 DB의 '테스트고객'·extra_demo_admin, 없을 때만 만듦)
 
 uv run uvicorn app.main:app --reload   # http://localhost:8000/docs
 ```
 
-시연용 문의 넣기(가짜 고객 여러 명):
+정책 문서는 팀 DB에 있는 것을 씁니다. 빈 연습용 DB에서 샘플 정책이 필요하면
+`uv run python -m scripts.ingest_policies --dir policies_sample` (실제 PDF는 관리자 화면에서 등록).
+
+시연용 문의 넣기 (팀 DB의 기존 가상 고객 여러 명으로):
 
 ```powershell
 uv run python -m scripts.seed_demo --csv <validation_canonical_981.csv 경로> --n 20
@@ -45,7 +47,7 @@ uv run ruff check .                    # PR을 올리면 GitHub Actions(CI)가 �
 ## 처리 흐름
 
 ```
-[고객으로 체험] → 고객 문의: 주문 상품 고르기(선택) → 메시지 보냄
+[고객으로 체험] → 고객 문의: 메시지 보냄
         │
         ▼
    AI 처리 ─▶ AI 서버: 분류 + 정책 검색 + 답변 초안 (이전 대화·고른 상품 포함)
@@ -115,7 +117,7 @@ tests/                 자동 테스트 (team_schema.sql = DB 담당자의 schem
 | 항목 | 결정 |
 |---|---|
 | 입장 | 로그인 화면의 **고객으로 체험 / 관리자로 체험** 버튼만 동작 (비밀번호 없음). 이메일·비밀번호 입력란은 백엔드와 연결 안 함 |
-| 문의 방식 | **채팅**. 채팅 1개 = 문의번호 1개. 시작할 때 **주문 상품**을 고를 수 있음 (선택 안 함 가능) |
+| 문의 방식 | **채팅**. 채팅 1개 = 문의번호 1개. 화면에서 '문의할 주문 상품' 선택은 뺌 (API에는 선택 항목으로 남아 있음) |
 | 자동답변 | AI 신뢰도 **80% 이상**이면 AI 상담사가 바로 답변, 미만이면 관리자 검토. 다른 규칙은 코드에 있지만 꺼둠 |
 | 검토 흐름 | "담당자에게 전달했어요" 안내 → **입력은 계속 가능** → 관리자 답변이 **같은 채팅에 상담원 답변으로** 붙고 상담 계속 |
 | 입력 잠금 | **상담이 종료됐을 때만** (채팅 종료하기 / 새 채팅하기 / 5분 무응답). AI가 답을 만드는 중에도 보낼 수 있고, **보낸 순서대로** 답함 |
@@ -128,7 +130,7 @@ tests/                 자동 테스트 (team_schema.sql = DB 담당자의 schem
 | 대시보드 | **전체 기간** 기준. 피크 타임은 가장 많이 들어온 2시간 구간과 그 구간 최다 유형만 계산 |
 | 정책 문서 | **PDF**. 새 PDF 등록, PDF 파일 교체, 문서 삭제(숨김), 미리보기. 시연용: AI 검색은 RAG 팀이 같은 PDF를 시연 전에 적재 |
 | 주문 정보 | 팀 DB의 orders / order_item. 상품이 여러 개인 주문은 '첫 상품 외 N건'으로 표시 |
-| 시연 데이터 | 김민지 + 가짜 고객 여러 명(박서연·김하늘·정다은·이준호·최지훈)과 가짜 주문 (팀 DB에 저장) |
+| 시연 데이터 | 팀 DB에 있는 가상 데이터를 그대로 씀 — 체험 고객 '테스트고객'(demo@example.invalid), 관리자 extra_demo_admin, 정책 문서. 백엔드가 새 가짜 고객·주문을 넣지 않음 |
 | 제외 | 긴급도, 영어 문의, 만족도, 연락처 전체 보기, 고객 화면의 관련 정책, 계정 정보 탭, 관리자 비밀번호 로그인 |
 | 문의번호 | `Q20261002-001` (Q + 한국 날짜 + 하루 일련번호 3자리). 채팅 1개 = 문의번호 1개. CS 번호는 쓰지 않음 |
 

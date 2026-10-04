@@ -5,7 +5,7 @@ mock AI의 신뢰도: 키워드 0개 0.4 / 1개 0.8 / 2개 이상 0.95 → 기�
 import re
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import Settings
 from app.db import SessionLocal
@@ -18,7 +18,7 @@ from tests.conftest import make_pdf
 
 AUTO_Q = "배송 기간이 며칠이나 걸리나요?"            # 키워드 2개 → 0.95 → 자동답변
 REVIEW_Q = "안녕하세요 그냥 여쭤볼 게 있어서요"       # 키워드 0개 → 0.4 → 검토
-EARPHONE = "20241210-1234567"                          # 시연 고객(김민지)의 가짜 주문
+EARPHONE = "20241210-1234567"                          # 체험 고객의 테스트용 주문 (conftest.TEST_ORDERS)
 
 
 def _conv(db, no) -> Conversation:
@@ -47,7 +47,7 @@ def _approve(client, admin_headers, no, **body):
 
 def test_demo_entry_and_roles(client, customer_headers, admin_headers):
     r = client.post("/api/demo/customer")
-    assert r.json()["role"] == "customer" and r.json()["name"] == "김민지"
+    assert r.json()["role"] == "customer" and r.json()["name"] == "테스트고객"
     assert client.post("/api/demo/admin").json()["role"] == "admin"
     assert client.get("/api/orders").status_code == 401
     assert client.get("/api/admin/reviews", headers=customer_headers).status_code == 401
@@ -106,7 +106,7 @@ def test_review_keeps_chat_open_and_admin_answer_joins_chat(client, customer_hea
 
     detail = client.get(f"/api/admin/reviews/{no}", headers=admin_headers).json()
     assert detail["status_code"] == "REVIEWING" and detail["status_label"] == "검토대기"   # 관리자 화면엔 검토대기
-    assert detail["customer"]["email"] == "kimminji@email.com" and detail["customer"]["phone"] == "010-1234-5678"
+    assert detail["customer"]["email"] == "demo@example.invalid" and detail["customer"]["phone"] == "010-1234-5678"
     rq = detail["review_question"]
     assert rq["needs_review"] and rq["content"] == REVIEW_Q and rq["analysis"]["intent_confidence"] == 0.4
 
@@ -325,6 +325,17 @@ def test_training_export_and_meta(client, admin_headers, customer_headers):
     assert m["display_category_map"]["취소"] == "주문" and m["display_category_map"]["문의"] == "기타"
 
 
+def test_seed_base_keeps_existing_team_accounts(capsys):
+    """팀 DB에 계정이 이미 있으면 seed_base는 아무것도 바꾸지 않음."""
+    from scripts import seed_base
+    with SessionLocal() as db:
+        before = db.scalar(select(func.count(Customer.id)))
+    seed_base.main()
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count(Customer.id))) == before
+    assert "그대로 사용" in capsys.readouterr().out
+
+
 def test_removed_features(client, customer_headers, admin_headers):
     assert client.get("/api/me", headers=customer_headers).status_code == 404               # 계정 정보 탭 삭제
     assert client.post("/api/admin/policies/1/attachments", headers=admin_headers).status_code == 404
@@ -356,7 +367,7 @@ def test_team_db_records(client, customer_headers, admin_headers):
 def test_only_backend_chats_are_listed(client, customer_headers, admin_headers):
     """팀 샘플·실습 스크립트로 만든 채팅(conversation_ext 없음)은 백엔드 화면에 나오지 않음."""
     with SessionLocal() as db:
-        cid = db.scalar(select(Customer.id).where(Customer.phone == "01012345678"))
+        cid = db.scalar(select(Customer.id).where(Customer.email == "demo@example.invalid"))
         conv = Conversation(customer_id=cid, title="실습")
         db.add(conv)
         db.flush()

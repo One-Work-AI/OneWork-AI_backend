@@ -24,13 +24,21 @@ os.environ["AI_MODE"] = "mock"
 os.environ["JWT_SECRET"] = "test-secret-for-pytest-only-0123456789"
 os.environ["CHAT_TIMEOUT_SWEEP_SECONDS"] = "0"          # 테스트에서는 백그라운드 자동 종료 확인 끔
 os.environ["POLICY_FILE_DIR"] = (_tmp / "policies").as_posix()
+os.environ["DEMO_CUSTOMER_EMAIL"] = "demo@example.invalid"
+os.environ["DEMO_CUSTOMER_NAME"] = "테스트고객"
+os.environ["DEMO_ADMIN_USERNAME"] = "extra_demo_admin"
+
+from datetime import UTC, datetime, timedelta
 
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from app.config import get_settings
 from app.db import SessionLocal, engine
 from app.main import app
+from app.models import Customer, Order, OrderItem, Product
 from app.services.policies import ingest_directory
 from scripts import seed_base
 
@@ -57,10 +65,36 @@ def make_pdf(text: str) -> bytes:
     return bytes(out)
 
 
+# 테스트용 주문 (주문번호, 상품명, 가격, 며칠 전) — 화면에서는 주문 상품 선택을 뺐지만 API는 선택 항목으로 남아 있음
+TEST_ORDERS = [
+    ("20241210-1234567", "무선 블루투스 이어폰 Pro", 89000, 3),
+    ("20241208-2345678", "데일리 코튼 니트 (베이지, M)", 39000, 5),
+    ("20241205-3456789", "스테인리스 텀블러 500ml", 18000, 8),
+]
+
+
+def _add_test_customer_data() -> None:
+    """빈 테스트 DB의 체험 고객에게 연락처와 주문을 붙임 (팀 DB에서는 하지 않음)."""
+    now = datetime.now(UTC)
+    with SessionLocal() as db:
+        customer = db.scalar(select(Customer).where(Customer.email == get_settings().demo_customer_email))
+        customer.phone = "01012345678"
+        for order_no, name, price, days_ago in TEST_ORDERS:
+            product = Product(product_name=name, price=price)
+            db.add(product)
+            db.flush()
+            order = Order(order_no=order_no, customer_id=customer.id, order_date=now - timedelta(days=days_ago),
+                          status="DELIVERED", total_amount=price)
+            order.items = [OrderItem(product_id=product.id, product_name=name, quantity=1, price=price, amount=price)]
+            db.add(order)
+        db.commit()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _db():
     command.upgrade(Config(str(ROOT / "alembic.ini")), "head")     # 백엔드 전용 cs_backend 테이블
-    seed_base.main()
+    seed_base.main()                                                 # 빈 DB라서 체험 고객·관리자를 새로 만듦
+    _add_test_customer_data()
     with SessionLocal() as db:
         ingest_directory(db, ROOT / "policies_sample")
     yield
