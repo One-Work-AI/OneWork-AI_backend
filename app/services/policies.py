@@ -34,7 +34,7 @@ from app.schemas import PolicyDetail, PolicyListItem
 
 log = logging.getLogger(__name__)
 UPLOAD_CHUNK = 1024 * 1024
-UI_EXTENSIONS = [".pdf"]   # 화면에서는 PDF만
+UI_EXTENSIONS = [".pdf"]   
 
 
 def _storage_dir() -> Path:
@@ -48,7 +48,7 @@ def _extract(raw: bytes, filename: str) -> str:
         return document_parser.parse_bytes(raw, filename).text
     except NotImplementedError:
         raise
-    except Exception:   # 깨진 PDF 등: 파일은 저장하고 글자는 비워 둠
+    except Exception:  
         log.warning("정책 파일에서 글자를 뽑지 못했습니다: %s", filename, exc_info=True)
         return ""
 
@@ -101,7 +101,7 @@ def register(db: Session, raw: bytes, filename: str, title: str | None = None, d
 
 def replace_file(db: Session, doc: PolicyDocument, raw: bytes, filename: str) -> PolicyDocument:
     doc.is_active = False
-    db.flush()   # 같은 문서 키는 사용 중인 버전이 하나만 있을 수 있음 (팀 DB 규칙)
+    db.flush()  
     new = _new_version(db, doc.document_key, raw, filename, title=doc.title, category=doc.category,
                        description=doc.file.description if doc.file else None)
     db.commit()
@@ -161,7 +161,7 @@ def list_policies(db: Session, q: str | None) -> list[PolicyListItem]:
     cond = [PolicyDocument.is_active.is_(True)]
     if q and q.strip():
         cond.append(PolicyDocument.title.contains(q.strip()))
-    docs = db.scalars(select(PolicyDocument).where(*cond).order_by(PolicyDocument.id)).all()
+    docs = db.scalars(select(PolicyDocument).where(*cond).order_by(PolicyDocument.id.desc())).all() 
     first = _first_created(db, [d.document_key for d in docs])
     return [_list_item(d, first.get(d.document_key)) for d in docs]
 
@@ -206,8 +206,6 @@ class IngestReport:
 
 
 def ingest_directory(db: Session, root: Path) -> IngestReport:
-    """폴더 안 파일을 등록. 같은 파일 이름(doc_key)의 문서가 있으면 내용이 바뀐 경우에만 파일 교체.
-    하위 폴더 이름이 카테고리 이름(결제/문의/배송/배송지/주문/취소/환불)이면 그 카테고리로 저장."""
     report = IngestReport()
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
         rel = path.relative_to(root)

@@ -25,7 +25,7 @@ from app.enums import (
 )
 from app.errors import AppError
 from app.models import AdminUser
-from app.schemas import ApproveRequest, DashboardOut, MetaOut, PolicyDetail, PolicyListItem, ReviewDetail, ReviewListOut
+from app.schemas import AnswerEditRequest, ApproveRequest, DashboardOut, MetaOut, PolicyDetail, PolicyListItem, ReviewDetail, ReviewListOut
 from app.services import dashboard, policies, reviews, training
 from app.utils import kst_today
 
@@ -70,6 +70,13 @@ def review_detail(inquiry_no: str, db: Session = Depends(get_db), _: AdminUser =
 def approve(inquiry_no: str, question_id: int, data: ApproveRequest, db: Session = Depends(get_db),
             admin: AdminUser = Depends(get_current_admin)):
     return reviews.approve(db, inquiry_no, question_id, admin, data)
+
+
+@router.put("/reviews/{inquiry_no}/questions/{question_id}/answer", response_model=ReviewDetail,
+            summary="답변 수정하기 (상담원 답변을 고침 → 고객 채팅에 '수정됨'으로 표시)")
+def edit_answer(inquiry_no: str, question_id: int, data: AnswerEditRequest, db: Session = Depends(get_db),
+                admin: AdminUser = Depends(get_current_admin)):
+    return reviews.edit_answer(db, inquiry_no, question_id, admin, data.response_text)
 
 
 # ───────── 운영 대시보드 ─────────

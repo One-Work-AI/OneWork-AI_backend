@@ -42,10 +42,11 @@ def list_conversations(
     status: Literal["CHATTING", "ANSWERED"] | None = Query(
         None, description="탭: CHATTING(상담 중, 검토 대기 포함) / ANSWERED(답변완료). 비우면 전체"),
     q: str | None = Query(None, description="문의 내용, 상품명 검색"),
+    category: str | None = Query(None, description="문의 유형: 배송 / 결제 / 교환/환불 / 주문 / 기타 (비우면 전체)"),
     page: int = Query(1, ge=1), size: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db), customer: Customer = Depends(get_current_customer),
 ):
-    return svc.list_conversations(db, customer, status, q, page, size)
+    return svc.list_conversations(db, customer, status, q, page, size, category)
 
 
 @router.get("/conversations/current", response_model=ConversationDetail | None,

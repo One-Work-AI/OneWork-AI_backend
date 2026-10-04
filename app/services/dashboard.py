@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.enums import UNCLASSIFIED, display_category
 from app.models import Conversation, ConversationExt
 from app.schemas import CountItem, DashboardOut, HourlyItem, PeakWindow, PendingItem
-from app.services.conversations import answered_by, chats, question_answered_at, questions_of, status_code
+from app.services.conversations import answered_by, chats, close_idle_conversations, question_answered_at, questions_of, status_code
 from app.services.reviews import pending_questions, pending_reasons, waiting_minutes
 from app.utils import to_kst
 
@@ -22,6 +22,7 @@ PEAK_HOURS = 2
 
 
 def build_dashboard(db: Session, include_demo: bool) -> DashboardOut:
+    close_idle_conversations()    
     cond = [] if include_demo else [ConversationExt.is_demo.is_(False)]
     convs = db.scalars(chats().where(*cond)).all()
 
@@ -57,7 +58,7 @@ def build_dashboard(db: Session, include_demo: bool) -> DashboardOut:
             inquiry_no=c.ext.inquiry_no, customer_name=c.customer.name, category=display_category(c.ext.category),
             product_name=c.ext.product_name, preview=pend[0].content, created_at=c.created_at,
             waiting_minutes=waiting_minutes(pend) or 0, reasons=pending_reasons(pend)))
-    pending_list.sort(key=lambda p: -p.waiting_minutes)   # 오래된 순
+    pending_list.sort(key=lambda p: -p.waiting_minutes)  
 
     return DashboardOut(
         total_inquiries=total,
