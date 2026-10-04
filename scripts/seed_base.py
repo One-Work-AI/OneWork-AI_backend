@@ -25,7 +25,7 @@ def main():
             db.add(Customer(name=s.demo_customer_name, email=s.demo_customer_email))
             print(f"시연용 고객 생성: {s.demo_customer_name} ({s.demo_customer_email})")
         else:
-            print(f"시연용 고객 확인: {customer.name} ({customer.email}) — 그대로 사용")
+            print(f"시연용 고객 확인: {customer.name} ({customer.email}) 그대로 사용")
 
         admin = db.scalar(select(AdminUser).where(AdminUser.login_id == s.demo_admin_username))
         if admin is None:
@@ -34,7 +34,7 @@ def main():
         elif not admin.is_active:
             print(f"시연용 관리자 {admin.login_id}가 비활성 상태입니다. 활성 관리자로 DEMO_ADMIN_USERNAME을 바꿔 주세요.")
         else:
-            print(f"시연용 관리자 확인: {admin.name} ({admin.login_id}) — 그대로 사용")
+            print(f"시연용 관리자 확인: {admin.name} ({admin.login_id}) 그대로 사용")
         db.commit()
 
 
