@@ -1,20 +1,25 @@
 """DB 테이블.
 
 팀 DB (cs_chatbot 스키마, DB 담당자의 schema.sql) — 백엔드가 쓰는 컬럼만 적었습니다. 구조는 바꾸지 않습니다.
-- customer, admin_user                 고객, 관리자 (체험은 김민지 1명, 관리자 1명)
-- product, orders, order_item           주문 ('문의할 주문 상품' 목록)
+- customer, admin_user                 고객, 관리자 (체험 계정도 팀 DB의 가상 계정)
+- product, orders, order_item           주문 (선택 항목. 화면에서는 주문 상품 선택을 뺐음)
 - conversation                         채팅 1개
-- inquiry                              고객 질문 1개 (채팅 하나에 여러 개)
+- inquiry                              고객 질문 1개 (채팅 하나에 여러 개). inquiry_no = 채팅 문의번호 + 순서
 - ai_analysis                          질문 하나의 AI 분류와 자동답변 판단 (수정·삭제 불가, 다시 하면 새 행)
 - ai_response                          AI 답변 초안 + 고객에게 나간 최종 답변 (status=SENT)
 - retrieved_policy                     답변의 근거로 검색된 정책 조각
 - admin_review                         관리자 검토 기록 (수정·삭제 불가)
 - policy_document / policy_chunk       정책 문서 버전별 1행 (PDF 교체 = 새 버전 행), 조각
 
-백엔드 전용 (cs_backend 스키마, migrations/) — 팀 DB에 칸이 없는 정보
-- conversation_ext   채팅 문의번호(Q20261002-001), 고른 주문 상품, 문의 유형, 자동 종료 타이머·사유, 시연 표시
-- analysis_ext       검토 사유 코드, AI 오류 메시지, AI 응답 시간
-- policy_file        올린 PDF 파일 정보 (파일 이름, 서버 저장 이름, 크기, 해시, 설명)
+백엔드 전용 (cs_backend 스키마, migrations/) — 팀 DB 값으로 계산할 수 없는 것만
+- conversation_ext   채팅 종료 사유, 시연 표시
+
+팀 DB 값으로 계산하는 것 (따로 저장하지 않음)
+- 채팅 문의번호 Q20261002-001  = 첫 질문 inquiry_no(Q20261002-001-01)에서 순서를 뗀 값
+- 문의 유형                     = 첫 질문의 관리자 검토 라벨, 없으면 AI 분류 (ai_analysis)
+- 5분 자동 종료 기준 시각       = 마지막으로 전송된 답변의 ai_response.sent_at
+- 검토 사유                     = ai_analysis.decision_reason (사람이 읽는 사유 목록)
+- 정책 PDF 파일                 = policy_document.source_file(올린 파일 이름) + 서버의 storage/policies/{id}.pdf
 
 팀 DB의 트리거가 지키는 규칙 (백엔드도 맞춰서 씀)
 - ai_response: 자동 전송은 ai_analysis.auto_response_allowed가 참일 때만, 관리자 전송은 같은 최종 문구를 승인한 검토가 있어야 함
@@ -24,7 +29,6 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, Text
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import BACKEND_SCHEMA, TEAM_SCHEMA, Base
@@ -147,6 +151,7 @@ class Inquiry(Base):
     created_at: Mapped[datetime] = _ts(default=utcnow)
 
     conversation: Mapped[Conversation] = relationship(back_populates="inquiries")
+    order: Mapped[Order | None] = relationship()
     analyses: Mapped[list["AIAnalysis"]] = relationship(order_by="AIAnalysis.id", lazy="selectin")
     responses: Mapped[list["AIResponse"]] = relationship(order_by="AIResponse.id", lazy="selectin")
 
@@ -163,12 +168,10 @@ class AIAnalysis(Base):
     intent_confidence: Mapped[float | None] = mapped_column(Numeric(6, 5, asdecimal=False))
     urgency: Mapped[str] = mapped_column(Text, default="NORMAL")
     auto_response_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
-    decision_reason: Mapped[str | None] = mapped_column(Text)   # 사람이 읽는 검토 사유 (코드는 analysis_ext.reasons)
+    decision_reason: Mapped[str | None] = mapped_column(Text)   # 검토 사유 목록 ("신뢰도 기준 미만, …")
     decision_rule_version: Mapped[str] = mapped_column(Text)
     analysis_model: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = _ts(default=utcnow)
-
-    ext: Mapped["AnalysisExt | None"] = relationship(lazy="selectin")
 
 
 class AIResponse(Base):
@@ -243,12 +246,11 @@ class PolicyDocument(Base):
     title: Mapped[str] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text, default="")   # PDF에서 뽑은 글자 (mock 검색·근거 연결용)
-    source_file: Mapped[str | None] = mapped_column(Text)
+    source_file: Mapped[str | None] = mapped_column(Text)   # 올린 파일 이름 (파일은 서버 storage/policies/{id}.pdf)
     version: Mapped[str] = mapped_column(Text)               # "1", "2", … (팀 샘플은 "demo-v1" 같은 값도 있음)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = _ts(default=utcnow)
 
-    file: Mapped["PolicyFile | None"] = relationship(lazy="joined")
     chunks: Mapped[list["PolicyChunk"]] = relationship(back_populates="document", order_by="PolicyChunk.chunk_order")
 
 
@@ -270,44 +272,12 @@ class PolicyChunk(Base):
 # ───────────────────────── 백엔드 전용 (cs_backend) ─────────────────────────
 
 class ConversationExt(Base):
-    """채팅 1개에 1행. 이 행이 있는 채팅만 백엔드 화면에 나옵니다 (팀 샘플·실습으로 만든 채팅은 제외)."""
+    """채팅 1개에 1행 (팀 DB에 칸이 없는 것만). 이 행이 있는 채팅만 백엔드 화면에 나옵니다 (팀 샘플·실습 채팅은 제외)."""
     __tablename__ = "conversation_ext"
     __table_args__ = BACKEND
 
     conversation_id: Mapped[int] = mapped_column(BigInteger, _fk("conversation"), primary_key=True)
-    inquiry_no: Mapped[str] = mapped_column(Text, unique=True)       # 채팅 문의번호 Q20261002-001 (화면에 보이는 번호)
-    # 고른 주문 상품 (사본 — 주문 정보가 나중에 바뀌어도 문의 당시 값 유지). '선택 안 함'이면 비어 있음
-    order_id: Mapped[int | None] = mapped_column(BigInteger, _fk("orders"))
-    order_no: Mapped[str | None] = mapped_column(Text)
-    product_name: Mapped[str | None] = mapped_column(Text)
-    # 문의 유형 = 첫 질문의 최종 라벨 (DB 카테고리 7개 기준, 관리자가 고치면 고친 값)
-    category: Mapped[str | None] = mapped_column(Text)
-    intent: Mapped[str | None] = mapped_column(Text)
-    # 자동 종료 타이머 기준 시각 = 마지막으로 챗봇·상담원 답변이 표시된 시각
-    last_answer_at: Mapped[datetime | None] = _ts()
     close_reason: Mapped[str | None] = mapped_column(Text)          # USER / NEW_CHAT / TIMEOUT
-    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)   # scripts.seed_demo 로 넣은 시연 채팅
 
     conversation: Mapped[Conversation] = relationship(back_populates="ext")
-
-
-class AnalysisExt(Base):
-    __tablename__ = "analysis_ext"
-    __table_args__ = BACKEND
-
-    analysis_id: Mapped[int] = mapped_column(BigInteger, _fk("ai_analysis"), primary_key=True)
-    reasons: Mapped[list] = mapped_column(JSONB, default=list)        # 검토 사유 코드 (enums.ReviewReason)
-    error_message: Mapped[str | None] = mapped_column(Text)
-    latency_ms: Mapped[int | None] = mapped_column(Integer)
-
-
-class PolicyFile(Base):
-    __tablename__ = "policy_file"
-    __table_args__ = BACKEND
-
-    policy_document_id: Mapped[int] = mapped_column(BigInteger, _fk("policy_document"), primary_key=True)
-    filename: Mapped[str] = mapped_column(Text)        # 올린 파일 이름
-    stored_name: Mapped[str] = mapped_column(Text)     # 서버에 저장한 파일 이름 (겹치지 않게 무작위)
-    size_bytes: Mapped[int] = mapped_column(BigInteger)
-    content_hash: Mapped[str] = mapped_column(Text)
-    description: Mapped[str | None] = mapped_column(Text)

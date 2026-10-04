@@ -53,7 +53,7 @@ def main():
         with SessionLocal() as db:
             customer = db.get(Customer, cid)
             conv, question = svc.start_conversation(db, customer, questions.pop()[:2000], is_demo=True)
-            inquiry_no, qid = conv.ext.inquiry_no, question.id
+            inquiry_no, qid = svc.chat_no(conv), question.id
         process_question(qid)
         if rng.random() < 0.3:      # 가끔 이어서 질문
             with SessionLocal() as db:

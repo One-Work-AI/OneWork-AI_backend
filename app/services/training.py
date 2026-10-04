@@ -7,22 +7,19 @@
 import csv
 import io
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.models import AdminReview, AIResponse, ConversationExt, Inquiry
+from app.services.conversations import split_question_no
 from app.utils import to_kst
 
 COLUMNS = ["플래그", "문의 내용", "카테고리", "의도", "응답", "source_file", "inquiry_no", "turn", "reviewed_at"]
 
 
 def export_training_csv(db: Session) -> str:
-    earlier = aliased(Inquiry)
-    turn = (select(func.count(earlier.id))
-            .where(earlier.conversation_id == Inquiry.conversation_id, earlier.id <= Inquiry.id)
-            .scalar_subquery())
     rows = db.execute(
-        select(Inquiry.content, AdminReview, ConversationExt.inquiry_no, turn)
+        select(Inquiry.content, Inquiry.inquiry_no, AdminReview)
         .join(AIResponse, AIResponse.id == AdminReview.response_id)
         .join(Inquiry, Inquiry.id == AIResponse.inquiry_id)
         .join(ConversationExt, ConversationExt.conversation_id == Inquiry.conversation_id)
@@ -33,7 +30,8 @@ def export_training_csv(db: Session) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(COLUMNS)
-    for content, rv, inquiry_no, n in rows:
+    for content, question_no, rv in rows:
+        chat_no, turn = split_question_no(question_no)     # Q20261002-001-02 → 문의번호, 질문 순서
         w.writerow(["", content, rv.modified_category, rv.modified_intent, rv.modified_response,
-                    "admin_review", inquiry_no, n, to_kst(rv.reviewed_at).isoformat()])
-    return "﻿" + buf.getvalue()   # 엑셀에서 한글이 안 깨지게 BOM (train.csv와 같은 utf-8-sig)
+                    "admin_review", chat_no, turn, to_kst(rv.reviewed_at).isoformat()])
+    return "\ufeff" + buf.getvalue()   # 엑셀에서 한글이 안 깨지게 BOM (train.csv와 같은 utf-8-sig)

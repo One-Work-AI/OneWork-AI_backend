@@ -1,7 +1,8 @@
 # DAITDA CS 챗봇 — 백엔드
 
 FastAPI + SQLAlchemy + Alembic. DB는 **팀 PostgreSQL**(DB 담당자의 `schema.sql`로 만든 `cs_chatbot` 스키마)을 그대로 씁니다.
-팀 DB에 칸이 없는 백엔드 전용 정보만 `cs_backend` 스키마에 따로 둡니다 (아래 [팀 DB와 연결](#팀-db와-연결)).
+팀 DB 값으로 계산할 수 없는 정보(채팅 종료 사유, 시연 표시)만 `cs_backend` 스키마의 작은 테이블 1개에 둡니다
+(아래 [팀 DB와 연결](#팀-db와-연결)).
 
 - 프론트엔드용 API 안내 (DAITDA 화면별): [docs/API.md](docs/API.md) — 서버 실행 후 http://localhost:8000/docs 에서도 확인
 - 모델·RAG 팀용 AI 서버 입출력 형식: [docs/AI_SERVER_CONTRACT.md](docs/AI_SERVER_CONTRACT.md)
@@ -19,7 +20,7 @@ copy .env.example .env                 # 그다음 .env에서 PGPASSWORD(DB 폴�
 # 팀 DB에 접속되는지 먼저 확인 (Tailscale 켜기 → TcpTestSucceeded : True)
 Test-NetConnection 100.106.86.93 -Port 5433
 
-uv run alembic upgrade head            # 백엔드 전용 테이블(cs_backend) 만들기 — 팀 DB 테이블은 건드리지 않음
+uv run alembic upgrade head            # 백엔드 전용 테이블 1개(cs_backend.conversation_ext) 만들기 — 팀 DB 테이블은 건드리지 않음
 uv run python -m scripts.seed_base     # 체험 계정 확인 (팀 DB의 '테스트고객'·extra_demo_admin, 없을 때만 만듦)
 
 uv run uvicorn app.main:app --reload   # http://localhost:8000/docs
@@ -155,14 +156,27 @@ DB 담당자의 `schema.sql`(cs_chatbot 스키마)을 기준으로 저장합니�
 
 | 화면의 개념 | 팀 DB (cs_chatbot) | 백엔드 전용 (cs_backend) |
 |---|---|---|
-| 채팅 1개 (문의번호 `Q20261002-001`) | `conversation` | `conversation_ext` — 문의번호, 고른 주문 상품(사본), 문의 유형, 5분 타이머, 종료 사유, 시연 표시 |
-| 고객 질문 | `inquiry` (문의번호-순서, 예: `Q20261002-001-01`) | |
-| AI 분류·자동답변 판단 | `ai_analysis` | `analysis_ext` — 검토 사유 코드, AI 오류 메시지, 응답 시간 |
+| 채팅 1개 | `conversation` | `conversation_ext` — 종료 사유(고객 종료 / 새 채팅 / 자동 종료), 시연 표시 |
+| 고객 질문 | `inquiry` (`inquiry_no` = 문의번호-순서, 예: `Q20261002-001-01`) | |
+| AI 분류·자동답변 판단·검토 사유 | `ai_analysis` (`decision_reason`) | |
 | AI 답변 초안 / 챗봇·상담원 답변 | `ai_response` (`status=SENT`가 고객에게 나간 답변) | |
 | 관리자 검토 | `admin_review` | |
 | 답변 근거 | `retrieved_policy` | |
-| 정책 문서 (PDF) | `policy_document`(버전별 1행), `policy_chunk` | `policy_file` — 파일 이름, 저장 이름, 크기, 설명 |
-| 주문 상품 목록 | `orders`, `order_item`, `product` | |
+| 정책 문서 (PDF) | `policy_document`(버전별 1행, `source_file`=올린 파일 이름), `policy_chunk` | |
+| 주문 (선택 항목) | `orders`, `order_item`, `product`, `inquiry.order_id` | |
+
+화면에 보이지만 따로 저장하지 않고 팀 DB 값으로 계산하는 것
+
+| 화면 값 | 계산 방법 |
+|---|---|
+| 문의번호 `Q20261002-001` | 첫 질문 `inquiry_no`(`Q20261002-001-01`)에서 순서를 뗀 값 |
+| 문의 유형 | 첫 질문의 관리자 검토 라벨(`admin_review.modified_category`), 없으면 AI 분류(`ai_analysis.category`) |
+| 5분 자동 종료 기준 | 마지막으로 전송된 답변의 `ai_response.sent_at` |
+| 검토 사유 | `ai_analysis.decision_reason`의 사유 목록 |
+| 정책 PDF 파일·크기 | 서버의 `POLICY_FILE_DIR/{문서 id}.pdf` |
+| 주문 상품 | 첫 질문의 `inquiry.order_id` → `order_item` |
+
+DB에 칸이 없어서 저장하지 않는 것: 정책 문서 설명, AI 서버 오류 내용·응답 시간(서버 로그에만 남김).
 
 - `conversation_ext`가 있는 채팅만 백엔드 화면에 나옵니다. 팀 샘플 데이터나 실습 스크립트(save_inquiry.py)로 만든 채팅은 보이지 않습니다.
 - '담당자에게 전달했어요' 안내는 저장하지 않고, 자동답변이 허용되지 않은 분석이 있으면 그 시각에 채팅에 표시합니다.

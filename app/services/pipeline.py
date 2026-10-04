@@ -5,7 +5,8 @@
         └─ 기준 미만 등   → 초안만 저장 (ai_response status=REVIEW_PENDING), 고객 화면엔 '담당자에게 전달했어요' 안내
                              (입력은 계속 가능, 타이머 멈춤 → 관리자 답변이 같은 채팅에 붙음)
 
-팀 DB에 남는 것: ai_analysis(분류·판단, 질문마다 1행) + ai_response(초안·전송) + retrieved_policy(근거)
+팀 DB에 남는 것: ai_analysis(분류·판단·검토 사유, 질문마다 1행) + ai_response(초안·전송) + retrieved_policy(근거)
+AI 서버 오류 내용과 응답 시간은 DB에 칸이 없어서 서버 로그에만 남깁니다.
 AI 서버가 돌려준 근거 중 팀 DB의 정책 조각(document_key + 조각 순서)과 연결되는 것만 retrieved_policy에 남습니다.
 
 고객이 답을 기다리지 않고 연달아 보내도, 한 채팅의 질문은 보낸 순서대로 하나씩 처리합니다 (채팅별 잠금).
@@ -20,11 +21,10 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.enums import INTENT_TO_CATEGORY, REVIEW_REASON_LABELS, UNCLASSIFIED, MessageRole, QuestionStatus, db_statuses
+from app.enums import REVIEW_REASON_LABELS, UNCLASSIFIED, MessageRole, QuestionStatus, ReviewReason, db_statuses
 from app.models import (
     AIAnalysis,
     AIResponse,
-    AnalysisExt,
     Conversation,
     ConversationExt,
     Inquiry,
@@ -34,12 +34,27 @@ from app.models import (
     utcnow,
 )
 from app.plugins.ai_client import AIRequest, AIResult, HistoryItem, OrderContext, get_ai_client
-from app.services.conversations import OPEN, question_status, transcript
+from app.plugins.order_source import product_name
+from app.services.conversations import chat_no, chat_order, question_status, transcript
 from app.services.decision import decide
 
 log = logging.getLogger(__name__)
 
 PROCESSING_STATUSES = db_statuses(QuestionStatus.PROCESSING)
+AUTO_OK = "자동답변 기준 충족"          # 검토 사유가 없을 때 decision_reason
+_REASON_BY_LABEL = {label: code for code, label in REVIEW_REASON_LABELS.items()}
+
+
+def reason_text(reasons: list[ReviewReason]) -> str:
+    """검토 사유 → 팀 DB ai_analysis.decision_reason (사람이 읽는 목록)."""
+    return ", ".join(REVIEW_REASON_LABELS[r] for r in reasons) or AUTO_OK
+
+
+def reason_codes(text: str | None) -> list[str]:
+    """decision_reason → 검토 사유 코드 (모르는 문구는 문구 그대로)."""
+    if not text or text == AUTO_OK:
+        return []
+    return [_REASON_BY_LABEL[p].value if p in _REASON_BY_LABEL else p for p in text.split(", ")]
 
 
 def _history(conv: Conversation, question: Inquiry) -> list[HistoryItem]:
@@ -69,10 +84,6 @@ def _confidence(v: float | None) -> float | None:
 
 def _label(v: str | None) -> str:
     return v.strip() if v and v.strip() else UNCLASSIFIED
-
-
-def is_first_question(conv: Conversation, question: Inquiry) -> bool:
-    return bool(conv.inquiries) and conv.inquiries[0].id == question.id
 
 
 _locks: dict[int, threading.Lock] = {}
@@ -120,10 +131,10 @@ def _process_one(question_id: int) -> None:
         q = _load(db, question_id)
         if q is None:
             return
-        conv, ext = q.conversation, q.conversation.ext
-        order = (OrderContext(order_no=ext.order_no, product_name=ext.product_name)
-                 if ext.order_no and ext.product_name else None)
-        request = AIRequest(inquiry_no=ext.inquiry_no, question=q.content, history=_history(conv, q), order=order)
+        conv = q.conversation
+        o = chat_order(conv)
+        order = OrderContext(order_no=o.order_no, product_name=product_name(o)) if o else None
+        request = AIRequest(inquiry_no=chat_no(conv), question=q.content, history=_history(conv, q), order=order)
 
     # AI 서버 호출 (DB 연결을 잡고 있지 않은 상태로 — 오래 걸릴 수 있음)
     result: AIResult | None = None
@@ -141,7 +152,6 @@ def _process_one(question_id: int) -> None:
         q = _load(db, question_id)
         if q is None:
             return
-        conv, ext = q.conversation, q.conversation.ext
         now = utcnow()
 
         analysis = AIAnalysis(
@@ -151,13 +161,11 @@ def _process_one(question_id: int) -> None:
             category_confidence=_confidence(result.category_confidence) if result else None,
             intent_confidence=_confidence(result.intent_confidence) if result else None,
             auto_response_allowed=decision.auto_send,
-            decision_reason=", ".join(REVIEW_REASON_LABELS[r] for r in decision.reasons) or "자동답변 기준 충족",
+            decision_reason=reason_text(decision.reasons),
             decision_rule_version=f"backend-v1 (min_confidence={s.review_min_confidence})",
             analysis_model=(result.model or "unknown") if result else "ai-error",
             created_at=now,
         )
-        analysis.ext = AnalysisExt(reasons=[r.value for r in decision.reasons], error_message=error,
-                                   latency_ms=latency_ms)
         db.add(analysis)
         db.flush()   # 답변의 자동 전송 검사(팀 DB 트리거)가 이 분석을 보므로 먼저 저장
 
@@ -182,20 +190,10 @@ def _process_one(question_id: int) -> None:
                                            similarity_score=src.score, rank=len(linked), created_at=now,
                                            score_metric=result.score_metric or "unspecified"))
 
-        # 채팅 목록에 보일 문의 유형 = 첫 질문의 분류
-        if (ext.category is None and result is not None and result.intent in INTENT_TO_CATEGORY
-                and is_first_question(conv, q)):
-            ext.intent = result.intent
-            ext.category = INTENT_TO_CATEGORY[result.intent]
-
-        if decision.auto_send:
-            q.status = "AUTO_ANSWERED"     # 팀 DB 트리거도 같은 값으로 바꿈
-            if conv.status == OPEN:
-                ext.last_answer_at = now   # 자동 종료 타이머 시작
-        else:
-            q.status = "REVIEW_PENDING"
+        # 자동답변이면 팀 DB 트리거가 AUTO_ANSWERED로 바꿈 (같은 값으로 맞춰 둠). 자동 종료 타이머는 sent_at 기준
+        q.status = "AUTO_ANSWERED" if decision.auto_send else "REVIEW_PENDING"
         db.commit()
-        log.info("문의 %s 질문 %s: %s %s", ext.inquiry_no, q.id, q.status, [r.value for r in decision.reasons])
+        log.info("문의 %s: %s %s (%dms)", q.inquiry_no, q.status, [r.value for r in decision.reasons], latency_ms)
 
 
 def resume_unfinished() -> int:

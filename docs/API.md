@@ -163,12 +163,12 @@ AI만 답한 문의면 `null`. 고객이 검토 중에도 계속 채팅할 수 �
 | 화면 | API |
 |---|---|
 | 정책 문서 목록 | `GET /api/admin/policies?q=` → `title`, `filename`, `size_bytes`, `created_at` |
-| 선택한 문서 정보 | `GET /api/admin/policies/{id}` → 문서명 `title`, 설명 `description`, 파일 `filename`·`size_bytes`, 등록일 `created_at`, `version` |
+| 선택한 문서 정보 | `GET /api/admin/policies/{id}` → 문서명 `title`, 파일 `filename`·`size_bytes`, 등록일 `created_at`, `version` (설명 칸은 DB에 없어서 뺐음) |
 | PDF 미리보기 | `GET /api/admin/policies/{id}/file` (브라우저에서 보기) |
 | 파일 받기 | `GET /api/admin/policies/{id}/file?download=true` |
 | PDF 파일 교체 | `PUT /api/admin/policies/{id}/file` (multipart, 필드 `file`) → 버전 +1, **응답의 `id`가 새 버전 id로 바뀜** |
 | 문서 삭제 | `DELETE /api/admin/policies/{id}` (목록에서 숨김) |
-| 새 PDF 등록 | `POST /api/admin/policies` (multipart: `file`, `title`(비우면 파일명), `description`) |
+| 새 PDF 등록 | `POST /api/admin/policies` (multipart: `file`, `title`(비우면 파일명)) |
 
 - PDF만, 200MB까지. 같은 파일 이름의 문서가 있으면 409 → 'PDF 파일 교체'를 쓰면 됩니다.
 - 교체하면 팀 DB에 새 버전 행이 생겨서 `id`가 바뀝니다. 교체 후에는 목록을 다시 불러오세요 (이전 id로 불러도 사용 중인 버전을 돌려줍니다).

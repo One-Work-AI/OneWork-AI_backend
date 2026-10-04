@@ -28,7 +28,7 @@ class OrderSource(Protocol):
     def get_order(self, db: Session, customer: Customer, order_no: str) -> OrderInfo | None: ...
 
 
-def _product_name(order: Order) -> str:
+def product_name(order: Order) -> str:
     """주문 상품 이름. 상품이 여러 개면 '첫 상품 외 N건'."""
     if not order.items:
         return "(상품 정보 없음)"
@@ -37,7 +37,7 @@ def _product_name(order: Order) -> str:
 
 
 def _info(o: Order) -> OrderInfo:
-    return OrderInfo(order_id=o.id, order_no=o.order_no, product_name=_product_name(o), ordered_at=o.order_date)
+    return OrderInfo(order_id=o.id, order_no=o.order_no, product_name=product_name(o), ordered_at=o.order_date)
 
 
 class TeamOrderSource:
