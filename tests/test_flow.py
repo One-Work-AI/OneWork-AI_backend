@@ -5,12 +5,12 @@ mock AI의 신뢰도: 키워드 0개 0.4 / 1개 0.8 / 2개 이상 0.95 → 기�
 import re
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import Settings
 from app.db import SessionLocal
 from app.enums import ReviewReason
-from app.models import AdminReview, AIResponse, Conversation, ConversationExt, Customer, Inquiry, RetrievedPolicy
+from app.models import AdminReview, AIResponse, Conversation, Customer, Inquiry, RetrievedPolicy, utcnow
 from app.plugins.ai_client import AIResult, AISource
 from app.security import create_access_token
 from app.services.decision import decide
@@ -18,11 +18,19 @@ from tests.conftest import make_pdf
 
 AUTO_Q = "배송 기간이 며칠이나 걸리나요?"            # 키워드 2개 → 0.95 → 자동답변
 REVIEW_Q = "안녕하세요 그냥 여쭤볼 게 있어서요"       # 키워드 0개 → 0.4 → 검토
-EARPHONE = "20241210-1234567"                          # 시연 고객(김민지)의 가짜 주문
+EARPHONE = "20241210-1234567"                          # 체험 고객의 테스트용 주문 (conftest.TEST_ORDERS)
 
 
 def _conv(db, no) -> Conversation:
-    return db.scalar(select(Conversation).join(Conversation.ext).where(ConversationExt.inquiry_no == no))
+    """채팅 문의번호로 찾기 (첫 질문의 inquiry_no = 문의번호-01)."""
+    return db.scalar(select(Conversation).join(Inquiry, Inquiry.conversation_id == Conversation.id)
+                     .where(Inquiry.inquiry_no == f"{no}-01"))
+
+
+def _later(monkeypatch, minutes: int) -> None:
+    """서버 시계를 앞으로 돌림 (전송된 답변 시각은 팀 DB 규칙상 바꿀 수 없어서)."""
+    t = utcnow() + timedelta(minutes=minutes)
+    monkeypatch.setattr("app.services.conversations.utcnow", lambda: t)
 
 
 def _start(client, headers, content, order_no=None, wait=True):
@@ -47,7 +55,7 @@ def _approve(client, admin_headers, no, **body):
 
 def test_demo_entry_and_roles(client, customer_headers, admin_headers):
     r = client.post("/api/demo/customer")
-    assert r.json()["role"] == "customer" and r.json()["name"] == "김민지"
+    assert r.json()["role"] == "customer" and r.json()["name"] == "테스트고객"
     assert client.post("/api/demo/admin").json()["role"] == "admin"
     assert client.get("/api/orders").status_code == 401
     assert client.get("/api/admin/reviews", headers=customer_headers).status_code == 401
@@ -106,7 +114,7 @@ def test_review_keeps_chat_open_and_admin_answer_joins_chat(client, customer_hea
 
     detail = client.get(f"/api/admin/reviews/{no}", headers=admin_headers).json()
     assert detail["status_code"] == "REVIEWING" and detail["status_label"] == "검토대기"   # 관리자 화면엔 검토대기
-    assert detail["customer"]["email"] == "kimminji@email.com" and detail["customer"]["phone"] == "010-1234-5678"
+    assert detail["customer"]["email"] == "demo@example.invalid" and detail["customer"]["phone"] == "010-1234-5678"
     rq = detail["review_question"]
     assert rq["needs_review"] and rq["content"] == REVIEW_Q and rq["analysis"]["intent_confidence"] == 0.4
 
@@ -160,14 +168,14 @@ def test_new_chat_and_close_button(client, customer_headers):
     assert client.get("/api/conversations/current", headers=customer_headers).json() is None
 
 
-def test_idle_timeout_only_while_chatting_with_bot(client, customer_headers):
-    chatting = _start(client, customer_headers, AUTO_Q)["inquiry_no"]
-    with SessionLocal() as db:
-        ext = _conv(db, chatting).ext
-        ext.last_answer_at = ext.last_answer_at - timedelta(minutes=6)
-        db.commit()
+def test_idle_timeout_only_while_chatting_with_bot(client, customer_headers, monkeypatch):
+    started = _start(client, customer_headers, AUTO_Q)
+    chatting, deadline = started["inquiry_no"], started["auto_close_at"]
+    assert deadline is not None
+    _later(monkeypatch, 6)
     d = client.get(f"/api/conversations/{chatting}", headers=customer_headers).json()
-    assert d["status"] == "CLOSED" and d["close_reason"] == "TIMEOUT"
+    assert d["status"] == "CLOSED" and d["close_reason"] == "TIMEOUT" and d["closed_at"] == deadline
+    monkeypatch.undo()
 
     reviewing = _start(client, customer_headers, REVIEW_Q)["inquiry_no"]
     with SessionLocal() as db:
@@ -175,10 +183,7 @@ def test_idle_timeout_only_while_chatting_with_bot(client, customer_headers):
         q.created_at = q.created_at - timedelta(hours=2)                       # 2시간째 검토 대기
         db.commit()
     _send(client, customer_headers, reviewing, AUTO_Q)                        # 챗봇 답변이 붙어도
-    with SessionLocal() as db:
-        ext = _conv(db, reviewing).ext
-        ext.last_answer_at = ext.last_answer_at - timedelta(minutes=30)
-        db.commit()
+    _later(monkeypatch, 30)
     d = client.get(f"/api/conversations/{reviewing}", headers=customer_headers).json()
     assert d["status"] == "OPEN" and d["review_pending"] is True              # 검토 대기 중이라 자동 종료 안 됨
 
@@ -271,7 +276,7 @@ def test_policies_pdf(client, admin_headers):
     pdf = make_pdf("Delivery policy: shipped within 2 business days")
     r = client.post("/api/admin/policies", headers=admin_headers,
                     files={"file": ("delivery_policy.pdf", pdf, "application/pdf")},
-                    data={"title": "배송 정책 · 배송 기간 안내", "description": "출고 기준일, 배송 소요 기간"})
+                    data={"title": "배송 정책 · 배송 기간 안내"})
     assert r.status_code == 201, r.text
     p = r.json()
     assert p["title"] == "배송 정책 · 배송 기간 안내" and p["filename"] == "delivery_policy.pdf"
@@ -299,7 +304,6 @@ def test_policies_pdf(client, admin_headers):
     assert v2["version"] == 2 and v2["filename"] == "delivery_policy_v2.pdf"
     assert v2["doc_key"] == "delivery_policy"                        # 파일을 바꿔도 문서 키는 그대로
     assert v2["id"] != pid and v2["created_at"] == p["created_at"]   # 새 버전 행, 등록일은 처음 등록한 날
-    assert v2["description"] == "출고 기준일, 배송 소요 기간"
     old_id_file = client.get(f"/api/admin/policies/{pid}/file", headers=admin_headers)
     assert old_id_file.content == new_pdf                            # 이전 id로 불러도 사용 중인 버전
     ids = [x["id"] for x in client.get("/api/admin/policies", headers=admin_headers).json()]
@@ -323,6 +327,17 @@ def test_training_export_and_meta(client, admin_headers, customer_headers):
     m = client.get("/api/admin/meta", headers=admin_headers).json()
     assert m["display_categories"] == ["배송", "결제", "교환/환불", "주문", "기타"]
     assert m["display_category_map"]["취소"] == "주문" and m["display_category_map"]["문의"] == "기타"
+
+
+def test_seed_base_keeps_existing_team_accounts(capsys):
+    """팀 DB에 계정이 이미 있으면 seed_base는 아무것도 바꾸지 않음."""
+    from scripts import seed_base
+    with SessionLocal() as db:
+        before = db.scalar(select(func.count(Customer.id)))
+    seed_base.main()
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count(Customer.id))) == before
+    assert "그대로 사용" in capsys.readouterr().out
 
 
 def test_removed_features(client, customer_headers, admin_headers):
@@ -356,7 +371,7 @@ def test_team_db_records(client, customer_headers, admin_headers):
 def test_only_backend_chats_are_listed(client, customer_headers, admin_headers):
     """팀 샘플·실습 스크립트로 만든 채팅(conversation_ext 없음)은 백엔드 화면에 나오지 않음."""
     with SessionLocal() as db:
-        cid = db.scalar(select(Customer.id).where(Customer.phone == "01012345678"))
+        cid = db.scalar(select(Customer.id).where(Customer.email == "demo@example.invalid"))
         conv = Conversation(customer_id=cid, title="실습")
         db.add(conv)
         db.flush()

@@ -1,7 +1,8 @@
 # DAITDA CS 챗봇 — 백엔드
 
 FastAPI + SQLAlchemy + Alembic. DB는 **팀 PostgreSQL**(DB 담당자의 `schema.sql`로 만든 `cs_chatbot` 스키마)을 그대로 씁니다.
-팀 DB에 칸이 없는 백엔드 전용 정보만 `cs_backend` 스키마에 따로 둡니다 (아래 [팀 DB와 연결](#팀-db와-연결)).
+팀 DB 값으로 계산할 수 없는 정보(채팅 종료 사유, 시연 표시)만 `cs_backend` 스키마의 작은 테이블 1개에 둡니다
+(아래 [팀 DB와 연결](#팀-db와-연결)).
 
 - 프론트엔드용 API 안내 (DAITDA 화면별): [docs/API.md](docs/API.md) — 서버 실행 후 http://localhost:8000/docs 에서도 확인
 - 모델·RAG 팀용 AI 서버 입출력 형식: [docs/AI_SERVER_CONTRACT.md](docs/AI_SERVER_CONTRACT.md)
@@ -19,14 +20,16 @@ copy .env.example .env                 # 그다음 .env에서 PGPASSWORD(DB 폴�
 # 팀 DB에 접속되는지 먼저 확인 (Tailscale 켜기 → TcpTestSucceeded : True)
 Test-NetConnection 100.106.86.93 -Port 5433
 
-uv run alembic upgrade head            # 백엔드 전용 테이블(cs_backend) 만들기 — 팀 DB 테이블은 건드리지 않음
-uv run python -m scripts.seed_base     # 시연용 고객(김민지)·주문·관리자를 팀 DB에 만들기
-uv run python -m scripts.ingest_policies --dir policies_sample   # 샘플 정책 문서 (실제 PDF는 관리자 화면에서 등록)
+uv run alembic upgrade head            # 백엔드 전용 테이블 1개(cs_backend.conversation_ext) 만들기 — 팀 DB 테이블은 건드리지 않음
+uv run python -m scripts.seed_base     # 체험 계정 확인 (팀 DB의 '테스트고객'·extra_demo_admin, 없을 때만 만듦)
 
 uv run uvicorn app.main:app --reload   # http://localhost:8000/docs
 ```
 
-시연용 문의 넣기(가짜 고객 여러 명):
+정책 문서는 팀 DB에 있는 것을 씁니다. 빈 연습용 DB에서 샘플 정책이 필요하면
+`uv run python -m scripts.ingest_policies --dir policies_sample` (실제 PDF는 관리자 화면에서 등록).
+
+시연용 문의 넣기 (팀 DB의 기존 가상 고객 여러 명으로):
 
 ```powershell
 uv run python -m scripts.seed_demo --csv <validation_canonical_981.csv 경로> --n 20
@@ -45,7 +48,7 @@ uv run ruff check .                    # PR을 올리면 GitHub Actions(CI)가 �
 ## 처리 흐름
 
 ```
-[고객으로 체험] → 고객 문의: 주문 상품 고르기(선택) → 메시지 보냄
+[고객으로 체험] → 고객 문의: 메시지 보냄
         │
         ▼
    AI 처리 ─▶ AI 서버: 분류 + 정책 검색 + 답변 초안 (이전 대화·고른 상품 포함)
@@ -115,7 +118,7 @@ tests/                 자동 테스트 (team_schema.sql = DB 담당자의 schem
 | 항목 | 결정 |
 |---|---|
 | 입장 | 로그인 화면의 **고객으로 체험 / 관리자로 체험** 버튼만 동작 (비밀번호 없음). 이메일·비밀번호 입력란은 백엔드와 연결 안 함 |
-| 문의 방식 | **채팅**. 채팅 1개 = 문의번호 1개. 시작할 때 **주문 상품**을 고를 수 있음 (선택 안 함 가능) |
+| 문의 방식 | **채팅**. 채팅 1개 = 문의번호 1개. 화면에서 '문의할 주문 상품' 선택은 뺌 (API에는 선택 항목으로 남아 있음) |
 | 자동답변 | AI 신뢰도 **80% 이상**이면 AI 상담사가 바로 답변, 미만이면 관리자 검토. 다른 규칙은 코드에 있지만 꺼둠 |
 | 검토 흐름 | "담당자에게 전달했어요" 안내 → **입력은 계속 가능** → 관리자 답변이 **같은 채팅에 상담원 답변으로** 붙고 상담 계속 |
 | 입력 잠금 | **상담이 종료됐을 때만** (채팅 종료하기 / 새 채팅하기 / 5분 무응답). AI가 답을 만드는 중에도 보낼 수 있고, **보낸 순서대로** 답함 |
@@ -128,7 +131,7 @@ tests/                 자동 테스트 (team_schema.sql = DB 담당자의 schem
 | 대시보드 | **전체 기간** 기준. 피크 타임은 가장 많이 들어온 2시간 구간과 그 구간 최다 유형만 계산 |
 | 정책 문서 | **PDF**. 새 PDF 등록, PDF 파일 교체, 문서 삭제(숨김), 미리보기. 시연용: AI 검색은 RAG 팀이 같은 PDF를 시연 전에 적재 |
 | 주문 정보 | 팀 DB의 orders / order_item. 상품이 여러 개인 주문은 '첫 상품 외 N건'으로 표시 |
-| 시연 데이터 | 김민지 + 가짜 고객 여러 명(박서연·김하늘·정다은·이준호·최지훈)과 가짜 주문 (팀 DB에 저장) |
+| 시연 데이터 | 팀 DB에 있는 가상 데이터를 그대로 씀 — 체험 고객 '테스트고객'(demo@example.invalid), 관리자 extra_demo_admin, 정책 문서. 백엔드가 새 가짜 고객·주문을 넣지 않음 |
 | 제외 | 긴급도, 영어 문의, 만족도, 연락처 전체 보기, 고객 화면의 관련 정책, 계정 정보 탭, 관리자 비밀번호 로그인 |
 | 문의번호 | `Q20261002-001` (Q + 한국 날짜 + 하루 일련번호 3자리). 채팅 1개 = 문의번호 1개. CS 번호는 쓰지 않음 |
 
@@ -153,14 +156,27 @@ DB 담당자의 `schema.sql`(cs_chatbot 스키마)을 기준으로 저장합니�
 
 | 화면의 개념 | 팀 DB (cs_chatbot) | 백엔드 전용 (cs_backend) |
 |---|---|---|
-| 채팅 1개 (문의번호 `Q20261002-001`) | `conversation` | `conversation_ext` — 문의번호, 고른 주문 상품(사본), 문의 유형, 5분 타이머, 종료 사유, 시연 표시 |
-| 고객 질문 | `inquiry` (문의번호-순서, 예: `Q20261002-001-01`) | |
-| AI 분류·자동답변 판단 | `ai_analysis` | `analysis_ext` — 검토 사유 코드, AI 오류 메시지, 응답 시간 |
+| 채팅 1개 | `conversation` | `conversation_ext` — 종료 사유(고객 종료 / 새 채팅 / 자동 종료), 시연 표시 |
+| 고객 질문 | `inquiry` (`inquiry_no` = 문의번호-순서, 예: `Q20261002-001-01`) | |
+| AI 분류·자동답변 판단·검토 사유 | `ai_analysis` (`decision_reason`) | |
 | AI 답변 초안 / 챗봇·상담원 답변 | `ai_response` (`status=SENT`가 고객에게 나간 답변) | |
 | 관리자 검토 | `admin_review` | |
 | 답변 근거 | `retrieved_policy` | |
-| 정책 문서 (PDF) | `policy_document`(버전별 1행), `policy_chunk` | `policy_file` — 파일 이름, 저장 이름, 크기, 설명 |
-| 주문 상품 목록 | `orders`, `order_item`, `product` | |
+| 정책 문서 (PDF) | `policy_document`(버전별 1행, `source_file`=올린 파일 이름), `policy_chunk` | |
+| 주문 (선택 항목) | `orders`, `order_item`, `product`, `inquiry.order_id` | |
+
+화면에 보이지만 따로 저장하지 않고 팀 DB 값으로 계산하는 것
+
+| 화면 값 | 계산 방법 |
+|---|---|
+| 문의번호 `Q20261002-001` | 첫 질문 `inquiry_no`(`Q20261002-001-01`)에서 순서를 뗀 값 |
+| 문의 유형 | 첫 질문의 관리자 검토 라벨(`admin_review.modified_category`), 없으면 AI 분류(`ai_analysis.category`) |
+| 5분 자동 종료 기준 | 마지막으로 전송된 답변의 `ai_response.sent_at` |
+| 검토 사유 | `ai_analysis.decision_reason`의 사유 목록 |
+| 정책 PDF 파일·크기 | 서버의 `POLICY_FILE_DIR/{문서 id}.pdf` |
+| 주문 상품 | 첫 질문의 `inquiry.order_id` → `order_item` |
+
+DB에 칸이 없어서 저장하지 않는 것: 정책 문서 설명, AI 서버 오류 내용·응답 시간(서버 로그에만 남김).
 
 - `conversation_ext`가 있는 채팅만 백엔드 화면에 나옵니다. 팀 샘플 데이터나 실습 스크립트(save_inquiry.py)로 만든 채팅은 보이지 않습니다.
 - '담당자에게 전달했어요' 안내는 저장하지 않고, 자동답변이 허용되지 않은 분석이 있으면 그 시각에 채팅에 표시합니다.
