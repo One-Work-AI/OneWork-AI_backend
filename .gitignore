@@ -8,3 +8,7 @@ __pycache__/
 *.db-wal
 *.db-shm
 storage/
+
+
+.localdb/
+storage/answer_edits.json
