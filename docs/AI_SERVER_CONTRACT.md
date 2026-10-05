@@ -4,7 +4,24 @@
 AI 서버는 **분류 → 정책 검색 → 답변 생성을 한 번에** 해서 돌려주고, 백엔드는 결과를 저장한 뒤
 **신뢰도가 80% 이상이면 챗봇 답변으로 바로 보내고, 미만이면 관리자 검토**로 넘깁니다.
 
-## 요청
+## 지금 연결하는 팀 AI 서버 (`/chat`, 기본)
+
+팀 AI 서버([ddongzz/cs_chatbot](https://github.com/ddongzz/cs_chatbot) `api/main.py`)는 아래 형식이라 백엔드가 이 형식에 맞춰 호출합니다
+(백엔드 `.env`: `AI_MODE=http`, `AI_SERVER_URL=http://<AI 서버 PC>:9000`, `AI_SERVER_FORMAT=chat`).
+
+```
+POST {AI_SERVER_URL}/chat
+요청: {"query": "배송 기간이 며칠이나 걸리나요?", "user_id": "Q20261006-001"}
+응답: {"answer": "…", "referenced_context": "검색된 약관 조각 3개를 이은 글", "processing_time": 12.3}
+```
+
+- `/chat`은 **카테고리·의도·신뢰도를 주지 않아서** 백엔드가 질문 키워드로 분류하고 신뢰도를 정합니다
+  (mock AI와 같은 규칙: 키워드 0개 0.4 / 1개 0.8 / 2개 이상 0.95). 응답에 `category`·`intent`·`*_confidence`를 넣어 주면 그 값을 씁니다.
+- 답변에 "약관에서 해당 내용을 찾을 수 없"는 문구가 있으면 신뢰도를 0.3으로 낮춰 **관리자 검토**로 보냅니다.
+- 이전 대화·고른 주문은 `/chat`이 받지 않아서 보내지 않고, 근거(`referenced_context`)는 정책 조각 번호가 없어 팀 DB `retrieved_policy`에 남지 않습니다.
+- 아래 `/v1/answer` 형식(분류·신뢰도·근거 목록 포함)으로 AI 서버를 바꾸면 `.env`의 `AI_SERVER_FORMAT=v1`로 전환합니다.
+
+## 요청 — 전체 형식 (`AI_SERVER_FORMAT=v1`)
 
 `POST {AI_SERVER_URL}/v1/answer`
 
@@ -89,5 +106,6 @@ AI 서버는 **분류 → 정책 검색 → 답변 생성을 한 번에** 해서
 
 ## 시험해 보기
 
-같은 형식으로 응답하는 가짜 서버: `uvicorn scripts.fake_ai_server:app --port 9000`
-실제 AI 서버를 만든 뒤 백엔드 `.env`를 `AI_MODE=http`, `AI_SERVER_URL=http://<주소>:<포트>`로 바꾸면 연결됩니다.
+GPU 없이 시험하는 가짜 서버 (`/chat`, `/v1/answer` 둘 다 응답): `uv run uvicorn scripts.fake_ai_server:app --port 9000`
+백엔드 `.env`를 `AI_MODE=http`, `AI_SERVER_URL=http://localhost:9000`으로 바꾸고 백엔드를 다시 켜면 연결됩니다.
+실제 AI 서버로 바꿀 때는 `AI_SERVER_URL`만 그 PC 주소로 바꾸면 됩니다 (같은 PC면 localhost, 다른 PC면 Tailscale 주소).
