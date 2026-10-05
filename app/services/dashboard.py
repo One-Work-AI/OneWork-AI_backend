@@ -13,18 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.enums import UNCLASSIFIED, display_category
 from app.models import Conversation, ConversationExt
-from app.plugins.order_source import product_name
 from app.schemas import CountItem, DashboardOut, HourlyItem, PeakWindow, PendingItem
-from app.services.conversations import (
-    answered_by,
-    chat_category,
-    chat_no,
-    chat_order,
-    chats,
-    question_answered_at,
-    questions_of,
-    status_code,
-)
+from app.services.conversations import answered_by, chats, close_idle_conversations, question_answered_at, questions_of, status_code
 from app.services.reviews import pending_questions, pending_reasons, waiting_minutes
 from app.utils import to_kst
 
@@ -32,6 +22,7 @@ PEAK_HOURS = 2
 
 
 def build_dashboard(db: Session, include_demo: bool) -> DashboardOut:
+    close_idle_conversations()    
     cond = [] if include_demo else [ConversationExt.is_demo.is_(False)]
     convs = db.scalars(chats().where(*cond)).all()
 
@@ -44,7 +35,7 @@ def build_dashboard(db: Session, include_demo: bool) -> DashboardOut:
     ai_done = sum(1 for c in answered if answered_by(c) == "AI")
     admin_done = sum(1 for c in answered if answered_by(c) == "ADMIN")
 
-    cats = Counter(display_category(chat_category(c)) or UNCLASSIFIED for c in counted)
+    cats = Counter(display_category(c.ext.category) or UNCLASSIFIED for c in counted)
 
     # 시간대별 (전체 기간, 고객 질문 단위)
     questions = [(q, c) for c in convs for q in questions_of(c)]
@@ -56,7 +47,7 @@ def build_dashboard(db: Session, include_demo: bool) -> DashboardOut:
     if received:
         start = max(range(24 - PEAK_HOURS + 1), key=lambda h: sum(received.get(h + i, 0) for i in range(PEAK_HOURS)))
         in_window = [c for q, c in questions if start <= to_kst(q.created_at).hour < start + PEAK_HOURS]
-        top = Counter(display_category(chat_category(c)) or UNCLASSIFIED for c in in_window).most_common(1)
+        top = Counter(display_category(c.ext.category) or UNCLASSIFIED for c in in_window).most_common(1)
         peak = PeakWindow(start_hour=start, end_hour=start + PEAK_HOURS, received=len(in_window),
                           top_category=top[0][0] if top else None)
 
@@ -64,11 +55,10 @@ def build_dashboard(db: Session, include_demo: bool) -> DashboardOut:
     for c in pending:
         pend = pending_questions(c)
         pending_list.append(PendingItem(
-            inquiry_no=chat_no(c), customer_name=c.customer.name, category=display_category(chat_category(c)),
-            product_name=product_name(o) if (o := chat_order(c)) else None, preview=pend[0].content,
-            created_at=c.created_at,
+            inquiry_no=c.ext.inquiry_no, customer_name=c.customer.name, category=display_category(c.ext.category),
+            product_name=c.ext.product_name, preview=pend[0].content, created_at=c.created_at,
             waiting_minutes=waiting_minutes(pend) or 0, reasons=pending_reasons(pend)))
-    pending_list.sort(key=lambda p: -p.waiting_minutes)   # 오래된 순
+    pending_list.sort(key=lambda p: -p.waiting_minutes)  
 
     return DashboardOut(
         total_inquiries=total,

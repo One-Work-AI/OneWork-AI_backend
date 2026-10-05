@@ -72,6 +72,8 @@ class ChatMessageOut(BaseModel):
     created_at: UTCDateTime
     is_notice: bool = Field(description="true면 '담당자에게 전달했어요' 안내 (답변 아님)")
     question_status: QuestionStatus | None = Field(description="고객 질문일 때만: 처리 상태")
+    edited_at: UTCDateTime | None = Field(None, description="상담원 답변을 수정한 시각 (수정 안 했으면 null)")
+    edited_by: str | None = Field(None, description="수정한 관리자 이름")
 
 
 class ConversationSummary(BaseModel):
@@ -90,6 +92,8 @@ class ConversationSummary(BaseModel):
 class ConversationListOut(BaseModel):
     items: list[ConversationSummary]
     page: Page
+    counts: dict[str, int] = Field(default_factory=dict,
+                                   description="탭별 건수: all(전체) / CHATTING(상담 중) / ANSWERED(답변완료)")
 
 
 class ConversationDetail(BaseModel):
@@ -160,6 +164,7 @@ class AnalysisOut(BaseModel):
     intent_confidence: float | None
     auto_response_allowed: bool
     reasons: list[ReasonOut]
+    error_message: str | None
     analysis_model: str | None
 
 
@@ -168,6 +173,7 @@ class AIDraftOut(BaseModel):
     generation_model: str | None
     prompt_version: str | None
     sent_automatically: bool
+    latency_ms: int | None
 
 
 class RetrievedOut(BaseModel):
@@ -234,6 +240,18 @@ class ReviewDetail(BaseModel):
         description="'AI 답변 · 관리자 검토' 칸에 쓸 질문: 검토대기 질문, 없으면 마지막으로 검토한 질문. AI만 답한 문의면 null")
     questions: list[QuestionDetail] = Field(description="고객 질문 전체의 AI 분석·초안·근거")
     previous_inquiries: list[RelatedInquiry] = Field(description="이전 채팅 내역 (같은 고객의 다른 문의, 최신순)")
+
+
+class AnswerEditRequest(BaseModel):
+    response_text: str = Field(min_length=1, description="수정한 답변")
+
+    @field_validator("response_text")
+    @classmethod
+    def _strip_edit(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("답변 내용을 입력해 주세요.")
+        return v
 
 
 class ApproveRequest(BaseModel):
@@ -317,6 +335,7 @@ class PolicyListItem(BaseModel):
 
 class PolicyDetail(PolicyListItem):
     doc_key: str
+    description: str | None
     text_extracted: bool = Field(description="PDF에서 글자를 뽑았는지 (스캔본이면 false)")
 
 

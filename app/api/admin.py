@@ -25,7 +25,7 @@ from app.enums import (
 )
 from app.errors import AppError
 from app.models import AdminUser
-from app.schemas import ApproveRequest, DashboardOut, MetaOut, PolicyDetail, PolicyListItem, ReviewDetail, ReviewListOut
+from app.schemas import AnswerEditRequest, ApproveRequest, DashboardOut, MetaOut, PolicyDetail, PolicyListItem, ReviewDetail, ReviewListOut
 from app.services import dashboard, policies, reviews, training
 from app.utils import kst_today
 
@@ -72,6 +72,13 @@ def approve(inquiry_no: str, question_id: int, data: ApproveRequest, db: Session
     return reviews.approve(db, inquiry_no, question_id, admin, data)
 
 
+@router.put("/reviews/{inquiry_no}/questions/{question_id}/answer", response_model=ReviewDetail,
+            summary="답변 수정하기 (상담원 답변을 고침 → 고객 채팅에 '수정됨'으로 표시)")
+def edit_answer(inquiry_no: str, question_id: int, data: AnswerEditRequest, db: Session = Depends(get_db),
+                admin: AdminUser = Depends(get_current_admin)):
+    return reviews.edit_answer(db, inquiry_no, question_id, admin, data.response_text)
+
+
 # ───────── 운영 대시보드 ─────────
 
 @router.get("/dashboard", response_model=DashboardOut, summary="운영 대시보드 (전체 기간)")
@@ -91,8 +98,9 @@ def list_policies(q: str | None = Query(None, description="문서명 검색"),
 @router.post("/policies", response_model=PolicyDetail, status_code=201, summary="새 PDF 등록")
 async def create_policy(file: UploadFile = File(..., description="PDF 파일 (200MB까지)"),
                         title: str | None = Form(None, description="문서명 (비우면 파일명)"),
+                        description: str | None = Form(None, description="설명 (선택)"),
                         db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
-    return await policies.upload_new(db, file, title)
+    return await policies.upload_new(db, file, title, description)
 
 
 @router.get("/policies/{policy_id}", response_model=PolicyDetail, summary="선택한 문서 정보")
@@ -113,7 +121,7 @@ def policy_file(policy_id: int, download: bool = Query(False, description="true�
                 db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
     doc, path = policies.get_file(db, policy_id)
     media = "application/pdf" if path.suffix.lower() == ".pdf" else "application/octet-stream"
-    return FileResponse(path, filename=doc.source_file or path.name, media_type=media,
+    return FileResponse(path, filename=doc.file.filename, media_type=media,
                         content_disposition_type="attachment" if download else "inline")
 
 
