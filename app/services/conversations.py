@@ -17,8 +17,14 @@
 - '담당자에게 전달했어요' 안내는 저장하지 않고, 자동답변이 허용되지 않은 분석(ai_analysis)이 있으면 그 시각에 표시
 
 문의 상태
-- 고객 화면: 상담 중(CHATTING) / 답변완료(ANSWERED). 검토 대기 중인 문의는 관리자가 답할 때까지 '상담 중'
-- 관리자 화면: 검토대기(REVIEWING) / 상담 중(CHATTING) / 답변완료(ANSWERED) — status_code()
+- 고객 화면: 채팅이 열려 있으면 상담 중(CHATTING), 종료되면(고객 종료·새 채팅·5분 자동 종료) 답변완료(ANSWERED)
+  검토 대기 질문이 남아 있어도 고객 화면은 답변완료 (관리자 화면에는 검토대기로 남아 답변할 수 있음)
+- 관리자 화면: status_code()
+  - 검토대기(REVIEWING): 검토 대기 질문이 있음. 관리자가 답한 뒤 고객이 다시 물어 검토로 넘어가면 다시 검토대기
+  - 답변완료(ANSWERED): 검토 대기 질문이 없고, 관리자가 답했거나 채팅이 종료됨
+  - 상담 중(CHATTING): 그 외 (AI와만 대화 중) — 관리자 목록에는 나오지 않음
+- 목록은 최근 대화순 (마지막 고객 메시지 시각, last_activity)
+- 상담원 답변을 고치면 수정본이 채팅에 보임 (answer_edits.py — 팀 DB의 보낸 답변은 수정 불가라 따로 저장)
 """
 import logging
 import re
@@ -57,6 +63,7 @@ from app.models import (
 )
 from app.plugins.order_source import get_order_source, product_name
 from app.schemas import ChatMessageOut, ConversationDetail, ConversationListOut, ConversationSummary, OrderOut, Page
+from app.services import answer_edits
 from app.utils import as_utc, kst_today
 
 log = logging.getLogger(__name__)
@@ -73,22 +80,37 @@ HAS_PENDING = _has_question(QuestionStatus.REVIEW_PENDING)
 HAS_PROCESSING = _has_question(QuestionStatus.PROCESSING)
 HAS_SENT = exists().where(Inquiry.conversation_id == Conversation.id, AIResponse.inquiry_id == Inquiry.id,
                           AIResponse.status == "SENT")
-# 관리자 화면 상태
+# 상담원(관리자)이 보낸 답변이 하나라도 있음
+HAS_ADMIN_ANSWER = exists().where(Inquiry.conversation_id == Conversation.id, AIResponse.inquiry_id == Inquiry.id,
+                                  AIResponse.status == "SENT", AIResponse.sent_automatically.is_(False))
+# 마지막으로 전송된 답변 시각 (5분 자동 종료 기준)
+LAST_SENT_AT = (select(func.max(AIResponse.sent_at)).join(Inquiry, AIResponse.inquiry_id == Inquiry.id)
+                .where(Inquiry.conversation_id == Conversation.id, AIResponse.status == "SENT")
+                .correlate(Conversation).scalar_subquery())
+# 관리자 화면 상태 (위 설명 참고)
 STATUS_CONDITIONS = {
     "REVIEWING": [HAS_PENDING],
-    "CHATTING": [~HAS_PENDING, Conversation.status == OPEN],
-    "ANSWERED": [~HAS_PENDING, Conversation.status == CLOSED],
+    "CHATTING": [~HAS_PENDING, Conversation.status == OPEN, ~HAS_ADMIN_ANSWER],
+    "ANSWERED": [~HAS_PENDING, or_(Conversation.status == CLOSED, HAS_ADMIN_ANSWER)],
 }
-# 고객 화면 상태 (검토 대기 중이면 '상담 중')
+# 고객 화면 상태: 채팅이 열려 있으면 상담 중, 종료되면 답변완료
 CUSTOMER_STATUS_CONDITIONS = {
-    "CHATTING": [or_(HAS_PENDING, Conversation.status == OPEN)],
-    "ANSWERED": STATUS_CONDITIONS["ANSWERED"],
+    "CHATTING": [Conversation.status == OPEN],
+    "ANSWERED": [Conversation.status == CLOSED],
 }
 
 
 def chats():
     """백엔드 채팅(conversation_ext가 있는 것)만 고르는 기본 쿼리."""
     return select(Conversation).join(Conversation.ext)
+
+
+def last_activity():
+    """최근 대화 시각 (목록 정렬용): 마지막 고객 메시지 시각, 메시지가 없으면 채팅 시작 시각.
+    고객이 계속 채팅하면 그 문의가 목록 맨 위로 올라옵니다."""
+    last_q = (select(func.max(Inquiry.created_at)).where(Inquiry.conversation_id == Conversation.id)
+              .correlate(Conversation).scalar_subquery())
+    return func.coalesce(last_q, Conversation.created_at)
 
 
 def count_chats(*cond):
@@ -170,16 +192,22 @@ def has_question(conv: Conversation, status: QuestionStatus) -> bool:
     return any(question_status(q) == status for q in conv.inquiries)
 
 
+def has_admin_answer(conv: Conversation) -> bool:
+    return any((r := sent_response(q)) is not None and not r.sent_automatically for q in conv.inquiries)
+
+
 def status_code(conv: Conversation) -> str:
-    """관리자 화면 상태: 검토대기 / 상담 중 / 답변완료."""
+    """관리자 화면 상태: 검토대기 / 상담 중 / 답변완료 (규칙은 위쪽 설명 참고)."""
     if has_question(conv, QuestionStatus.REVIEW_PENDING):
         return "REVIEWING"
-    return "CHATTING" if conv.status == OPEN else "ANSWERED"
+    if conv.status == CLOSED or has_admin_answer(conv):
+        return "ANSWERED"
+    return "CHATTING"
 
 
 def customer_status_code(conv: Conversation) -> str:
-    """고객 화면 상태: 상담이 끝났고 검토 대기 질문이 없으면 답변완료, 아니면 상담 중."""
-    return "ANSWERED" if status_code(conv) == "ANSWERED" else "CHATTING"
+    """고객 화면 상태: 채팅이 종료되면 답변완료 (고객 종료·새 채팅·5분 자동 종료), 아니면 상담 중."""
+    return "ANSWERED" if conv.status == CLOSED else "CHATTING"
 
 
 def _sent(conv: Conversation) -> list[AIResponse]:
@@ -204,7 +232,7 @@ def answered_at(conv: Conversation):
 
 def admin_answer(conv: Conversation) -> str | None:
     admin = [r for r in _sent(conv) if not r.sent_automatically]
-    return admin[-1].final_response_text if admin else None
+    return answer_edits.final_text(admin[-1]) if admin else None
 
 
 def close_reason(conv: Conversation) -> CloseReason | None:
@@ -241,9 +269,12 @@ def close_if_idle(conv: Conversation) -> bool:
 
 
 def close_idle_conversations() -> int:
-    """자동 종료 대상 채팅을 한 번에 종료 (백그라운드에서 주기적으로 실행)."""
+    """자동 종료 대상 채팅을 한 번에 종료 (백그라운드 + 관리자 목록·상세·대시보드·고객 목록을 열 때).
+    마감 시각이 지난 채팅만 DB에서 바로 골라서, 대상이 없으면 가벼운 조회 1번으로 끝납니다."""
+    cutoff = utcnow() - timedelta(minutes=get_settings().chat_idle_timeout_minutes)
     with SessionLocal() as db:
-        convs = db.scalars(chats().where(Conversation.status == OPEN, HAS_SENT, ~HAS_PENDING, ~HAS_PROCESSING)).all()
+        convs = db.scalars(chats().where(Conversation.status == OPEN, HAS_SENT, LAST_SENT_AT <= cutoff,
+                                         ~HAS_PENDING, ~HAS_PROCESSING)).all()
         closed = sum(close_if_idle(c) for c in convs)
         if closed:
             db.commit()
@@ -285,9 +316,12 @@ def transcript(conv: Conversation) -> list[ChatMessageOut]:
                 is_notice=True, question_status=None)))
         r = sent_response(q)
         if r is not None:
+            edit = None if r.sent_automatically else answer_edits.get(r.id)   # 상담원 답변 수정본
             events.append((r.sent_at, q.id, 2, ChatMessageOut(
                 id=f"r{r.id}", question_id=q.id, role=MessageRole.BOT if r.sent_automatically else MessageRole.ADMIN,
-                content=r.final_response_text, created_at=r.sent_at, is_notice=False, question_status=None)))
+                content=edit["text"] if edit else r.final_response_text, created_at=r.sent_at, is_notice=False,
+                question_status=None, edited_at=edit["edited_at"] if edit else None,
+                edited_by=edit["edited_by"] if edit else None)))
     events.sort(key=lambda e: (as_utc(e[0]), e[1], e[2]))
     return [e[3] for e in events]
 
@@ -419,12 +453,22 @@ def contains_text(kw: str):
 
 
 def list_conversations(db: Session, customer: Customer, status: str | None, q: str | None,
-                       page: int, size: int) -> ConversationListOut:
+                       page: int, size: int, category: str | None = None) -> ConversationListOut:
+    """문의 내역 (최근 대화순). category: 화면 유형(배송/결제/교환/환불/주문/기타). counts: 탭별 건수."""
     close_idle_conversations()
-    cond = [Conversation.customer_id == customer.id, *CUSTOMER_STATUS_CONDITIONS.get(status, [])]
+    mine = Conversation.customer_id == customer.id
+    cond = [mine, *CUSTOMER_STATUS_CONDITIONS.get(status, [])]
     if q and q.strip():
         cond.append(contains_text(q.strip()))
-    total = db.scalar(count_chats(*cond)) or 0
-    rows = db.scalars(chats().where(*cond).order_by(Conversation.created_at.desc(), Conversation.id.desc())
-                      .offset((page - 1) * size).limit(size)).all()
-    return ConversationListOut(items=[to_summary(c) for c in rows], page=Page(page=page, size=size, total=total))
+    query = chats().where(*cond).order_by(last_activity().desc(), Conversation.id.desc())
+    if category:
+        # 문의 유형은 첫 질문의 분석·검토에서 계산하는 값이라 불러온 뒤 거름 (관리자 목록과 같은 방식)
+        matched = [c for c in db.scalars(query).all() if display_category(chat_category(c)) == category]
+        total, rows = len(matched), matched[(page - 1) * size:page * size]
+    else:
+        total = db.scalar(count_chats(*cond)) or 0
+        rows = db.scalars(query.offset((page - 1) * size).limit(size)).all()
+    counts = {"all": db.scalar(count_chats(mine)) or 0,
+              **{code: db.scalar(count_chats(mine, *c)) or 0 for code, c in CUSTOMER_STATUS_CONDITIONS.items()}}
+    return ConversationListOut(items=[to_summary(c) for c in rows], page=Page(page=page, size=size, total=total),
+                               counts=counts)
