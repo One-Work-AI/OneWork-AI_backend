@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # AI 서버
     ai_mode: Literal["mock", "http"] = "mock"
     ai_server_url: str = "http://localhost:9000"
+    # AI 서버 형식: chat = 팀 AI 서버(ddongzz/cs_chatbot)의 POST /chat, v1 = docs/AI_SERVER_CONTRACT.md의 POST /v1/answer
+    ai_server_format: Literal["chat", "v1"] = "chat"
     ai_timeout_seconds: float = 120
     ai_history_messages: int = 6          # AI 서버에 함께 보낼 이전 대화 개수 (0이면 안 보냄)
 

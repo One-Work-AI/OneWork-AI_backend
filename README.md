@@ -106,7 +106,7 @@ tests/                 자동 테스트 (team_schema.sql = DB 담당자의 schem
 
 | 무엇이 정해지면 | 바꿀 곳 |
 |---|---|
-| **AI 서버(모델·RAG)** 완성 | `.env`에서 `AI_MODE=http`, `AI_SERVER_URL=...`. 형식은 docs/AI_SERVER_CONTRACT.md |
+| **AI 서버(모델·RAG)** 연결 | `.env`에서 `AI_MODE=http`, `AI_SERVER_URL=http://<AI 서버 PC>:9000` (팀 AI 서버 `/chat` 형식이 기본). 자세한 내용은 docs/AI_SERVER_CONTRACT.md |
 | **신뢰도 계산 방식·범위** | `.env`의 `REVIEW_MIN_CONFIDENCE` (지금 0.8) |
 | **다른 쇼핑몰 DB**에서 주문을 읽게 되면 | `app/plugins/order_source.py`에 클래스 추가 + `.env`의 `ORDER_SOURCE`. 고객을 어떻게 맞출지 정해야 함 |
 | **RAG 팀 조각 나누기 방식** | `app/plugins/chunker.py` |
