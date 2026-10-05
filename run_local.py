@@ -44,7 +44,7 @@ if "--ai" not in sys.argv:
     os.environ["AI_MODE"] = "mock"
 
 sys.path.insert(0, str(ROOT))
-from app.db import SessionLocal  # noqa: E402
+from app.db import SessionLocal
 
 seeded = DATA / ".seeded"
 if (ROOT / "alembic.ini").exists():
@@ -63,7 +63,7 @@ if not seeded.exists():
     print("체험 계정과 샘플 정책을 넣었어요.")
 
 print("\n로컬 DB로 백엔드를 실행해요 → http://127.0.0.1:8000/docs  (끄려면 Ctrl + C)\n")
-import uvicorn  # noqa: E402
+import uvicorn
 
 try:
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000)

@@ -25,7 +25,16 @@ from app.enums import (
 )
 from app.errors import AppError
 from app.models import AdminUser
-from app.schemas import AnswerEditRequest, ApproveRequest, DashboardOut, MetaOut, PolicyDetail, PolicyListItem, ReviewDetail, ReviewListOut
+from app.schemas import (
+    AnswerEditRequest,
+    ApproveRequest,
+    DashboardOut,
+    MetaOut,
+    PolicyDetail,
+    PolicyListItem,
+    ReviewDetail,
+    ReviewListOut,
+)
 from app.services import dashboard, policies, reviews, training
 from app.utils import kst_today
 

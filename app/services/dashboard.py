@@ -14,7 +14,14 @@ from sqlalchemy.orm import Session
 from app.enums import UNCLASSIFIED, display_category
 from app.models import Conversation, ConversationExt
 from app.schemas import CountItem, DashboardOut, HourlyItem, PeakWindow, PendingItem
-from app.services.conversations import answered_by, chats, close_idle_conversations, question_answered_at, questions_of, status_code
+from app.services.conversations import (
+    answered_by,
+    chats,
+    close_idle_conversations,
+    question_answered_at,
+    questions_of,
+    status_code,
+)
 from app.services.reviews import pending_questions, pending_reasons, waiting_minutes
 from app.utils import to_kst
 

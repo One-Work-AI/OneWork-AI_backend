@@ -13,8 +13,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect, text
 
-from app.db import BACKEND_SCHEMA, Base, engine
 import app.models  # noqa: F401  (모델을 불러와야 Base.metadata에 테이블이 등록됨)
+from app.db import BACKEND_SCHEMA, Base, engine
 
 EXPECTED = {t.name: {c.name for c in t.columns}
             for t in Base.metadata.tables.values() if t.schema == BACKEND_SCHEMA}

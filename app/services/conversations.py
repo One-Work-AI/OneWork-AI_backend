@@ -45,8 +45,8 @@ from app.enums import (
 from app.errors import AppError
 from app.models import AIAnalysis, AIResponse, Conversation, ConversationExt, Customer, Inquiry, utcnow
 from app.plugins.order_source import get_order_source
-from app.services import answer_edits
 from app.schemas import ChatMessageOut, ConversationDetail, ConversationListOut, ConversationSummary, OrderOut, Page
+from app.services import answer_edits
 from app.utils import as_utc, kst_today
 
 log = logging.getLogger(__name__)

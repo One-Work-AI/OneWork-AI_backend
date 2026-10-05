@@ -51,8 +51,8 @@ from app.schemas import (
     ReviewListOut,
     ReviewRecordOut,
 )
+from app.services import answer_edits
 from app.services.conversations import (
-    CLOSED,
     OPEN,
     STATUS_CONDITIONS,
     answered_at,
@@ -71,7 +71,6 @@ from app.services.conversations import (
     status_code,
     transcript,
 )
-from app.services import answer_edits
 from app.services.pipeline import is_first_question
 from app.utils import as_utc, format_phone
 
