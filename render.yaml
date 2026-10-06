@@ -1,0 +1,51 @@
+# Render 배포 설정 (Blueprint). Render 대시보드 → New → Blueprint → 이 레포를 고르면 아래 설정으로 서비스가 만들어집니다.
+# 자세한 순서는 docs/DEPLOY.md 참고.
+services:
+  - type: web
+    name: onework-ai-backend
+    runtime: python
+    plan: free
+    region: singapore          # 한국에서 가장 가까운 지역
+    branch: main               # main에 머지되면 자동으로 다시 배포
+    autoDeploy: true
+    # 실행에 필요한 패키지만 설치 (테스트용 pgserver·pytest·ruff는 제외)
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    # 켜질 때 백엔드 전용 테이블(cs_backend)을 만들고(이미 있으면 그대로) 서버 시작.
+    # 팀 DB 스키마(cs_chatbot)가 없으면 여기서 멈추고 이유를 로그에 남깁니다.
+    startCommand: .venv/bin/alembic upgrade head && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # ── 배포된 팀 DB (DB 담당자에게 받은 값을 Render 화면에서 직접 입력. 레포에는 적지 않습니다) ──
+      - key: PGHOST
+        sync: false
+      - key: PGPORT
+        value: "5432"
+      - key: PGDATABASE
+        sync: false
+      - key: PGUSER
+        sync: false
+      - key: PGPASSWORD
+        sync: false
+      - key: PGSSLMODE
+        value: require           # 클라우드 DB는 보통 SSL 필수. 안 되면 prefer로 바꾸세요
+      # ── 체험 입장 토큰 비밀값 (Render가 무작위로 만들어 줌) ──
+      - key: JWT_SECRET
+        generateValue: true
+      # ── 체험 입장 계정 (팀 DB에 있는 가상 계정) ──
+      - key: DEMO_CUSTOMER_EMAIL
+        value: demo@example.invalid
+      - key: DEMO_CUSTOMER_NAME
+        value: 테스트고객
+      - key: DEMO_ADMIN_USERNAME
+        value: extra_demo_admin
+      # ── AI 서버 (RunPod 주소는 Render 화면에서 입력. AI 서버가 꺼져 있을 때는 AI_MODE를 mock으로) ──
+      - key: AI_MODE
+        value: http
+      - key: AI_SERVER_FORMAT
+        value: chat
+      - key: AI_SERVER_URL
+        sync: false
+      - key: AI_TIMEOUT_SECONDS
+        value: "120"
