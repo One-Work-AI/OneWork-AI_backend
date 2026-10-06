@@ -146,14 +146,14 @@ def list_conversations(
 
 
 @router.get("/conversations/current", response_model=ConversationDetail | None,
-            summary="진행 중인 채팅 (없으면 null) — 고객 문의 화면을 열 때, '이어서 채팅하기'")
+            summary="진행 중인 채팅 중 가장 최근 것 (없으면 null) — 고객 문의 화면을 열 때, '이어서 채팅하기'")
 def current_conversation(db: Session = Depends(get_db), customer: Customer = Depends(get_current_customer)):
     conv = svc.get_current(db, customer)
     return svc.to_detail(conv) if conv else None
 
 
 @router.post("/conversations", response_model=ConversationDetail, status_code=201,
-             summary="새 채팅 시작 (첫 메시지 + 고른 주문 상품). 진행 중이던 채팅은 저장된 채로 종료")
+             summary="새 채팅 시작 (첫 메시지 + 고른 주문 상품). 진행 중이던 다른 채팅은 그대로 둠")
 def start_conversation(data: ConversationCreate, background: BackgroundTasks,
                        wait: bool = Query(False, description="true면 AI 답변까지 기다렸다가 응답"),
                        db: Session = Depends(get_db), customer: Customer = Depends(get_current_customer)):

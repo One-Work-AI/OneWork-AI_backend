@@ -80,7 +80,9 @@
 
 **채팅 종료하기** `POST /api/conversations/{문의번호}/close?reason=USER`
 **새 채팅하기** `POST /api/conversations/{문의번호}/close?reason=NEW_CHAT` 후 빈 채팅 화면
-(진행 중인 채팅이 있는데 `POST /api/conversations`를 보내도 이전 채팅은 자동으로 종료·저장됩니다)
+(`POST /api/conversations`로 새 채팅을 시작해도 **다른 채팅은 종료되지 않습니다.** 한 고객이 여러 채팅을 동시에 진행할 수 있고,
+이전 채팅을 끝내려면 위 close를 직접 호출합니다. 진행 중인 채팅이 여러 개면 `/conversations/current`는 가장 최근 것을 돌려주므로,
+이어서 볼 채팅은 화면이 문의번호를 기억했다가 `GET /api/conversations/{문의번호}`로 조회하는 것이 안전합니다)
 
 ## 문의 내역
 
