@@ -6,6 +6,7 @@ FastAPI + SQLAlchemy + Alembic. DB는 **팀 PostgreSQL**(DB 담당자의 `schema
 
 - 프론트엔드용 API 안내 (DAITDA 화면별): [docs/API.md](docs/API.md) — 서버 실행 후 http://localhost:8000/docs 에서도 확인
 - 모델·RAG 팀용 AI 서버 입출력 형식: [docs/AI_SERVER_CONTRACT.md](docs/AI_SERVER_CONTRACT.md)
+- 배포 (Render): [docs/DEPLOY.md](docs/DEPLOY.md) — 설정은 `render.yaml`
 - 팀 DB (스키마·ERD·데이터 사전): [One-Work-AI/DAITDA_WOO](https://github.com/One-Work-AI/DAITDA_WOO)
 - 프론트엔드는 별도 레포에서 이 API를 호출합니다.
 
