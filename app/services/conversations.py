@@ -2,7 +2,8 @@
 
 규칙
 - 고객이 보낸 메시지는 수정·취소할 수 없습니다 (그런 기능 자체가 없음).
-- 고객당 진행 중인 채팅은 1개. 새 채팅을 시작하면 이전 채팅은 저장된 채로 '새 채팅 시작'으로 종료됩니다.
+- 한 고객이 채팅을 여러 개 동시에 진행할 수 있습니다 (체험 입장은 모두 같은 고객 계정을 쓰므로 서로의 채팅을 끊지 않게).
+  새 채팅을 시작해도 다른 채팅은 그대로 상담 중이고, 채팅마다 따로 종료됩니다.
 - 입력이 막히는 건 상담이 종료됐을 때뿐입니다 (채팅 종료하기, 새 채팅하기, 5분 무응답).
   AI가 답을 만드는 중이거나 검토 대기 중에도 계속 보낼 수 있고, 질문은 보낸 순서대로 답합니다 (pipeline.py).
 - 관리자 검토 답변은 같은 채팅에 상담원 답변으로 붙고, 상담은 계속됩니다 (reviews.py).
@@ -371,11 +372,6 @@ def _next_chat_no(db: Session) -> str:
     return f"{prefix}{seq:03d}"
 
 
-def _close_open_chats(db: Session, customer_id: int) -> None:
-    for old in db.scalars(chats().where(Conversation.customer_id == customer_id, Conversation.status == OPEN)):
-        _close(old, CloseReason.NEW_CHAT)
-
-
 def get_owned(db: Session, customer: Customer, inquiry_no: str) -> Conversation:
     conv = db.scalar(chats().where(by_chat_no(inquiry_no), Conversation.customer_id == customer.id))
     if conv is None:
@@ -396,7 +392,7 @@ def get_current(db: Session, customer: Customer) -> Conversation | None:
 
 def start_conversation(db: Session, customer: Customer, content: str, order_no: str | None = None,
                        is_demo: bool = False) -> tuple[Conversation, Inquiry]:
-    """새 채팅 시작 (+ 선택: 고른 주문). 진행 중이던 채팅은 저장된 채로 '새 채팅 시작'으로 종료."""
+    """새 채팅 시작 (+ 선택: 고른 주문). 진행 중이던 다른 채팅은 건드리지 않습니다."""
     order_id = None
     if order_no:
         order = get_order_source().get_order(db, customer, order_no.strip())
@@ -404,7 +400,6 @@ def start_conversation(db: Session, customer: Customer, content: str, order_no: 
             raise AppError(404, "ORDER_NOT_FOUND", "주문을 찾을 수 없습니다.")
         order_id = order.order_id
     for _ in range(5):   # 동시에 시작돼 문의번호가 겹치면 다시 시도 (inquiry_no는 팀 DB에서 중복 불가)
-        _close_open_chats(db, customer.id)
         conv = Conversation(customer_id=customer.id, title=content[:50], status=OPEN, created_at=utcnow())
         conv.ext = ConversationExt(is_demo=is_demo)
         question = Inquiry(inquiry_no=question_no(_next_chat_no(db), 1), customer_id=customer.id, order_id=order_id,

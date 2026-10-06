@@ -558,19 +558,26 @@ def test_questions_answered_in_order(client, customer_headers):
     assert len({m["id"] for m in msgs}) == len(msgs)  # 화면 목록 키는 겹치지 않음
 
 
-def test_new_chat_and_close_button(client, customer_headers):
+def test_new_chat_keeps_other_chats_open(client, customer_headers):
     a = _start(client, customer_headers, AUTO_Q)
-    b = _start(client, customer_headers, AUTO_Q)
+    b = _start(client, customer_headers, AUTO_Q)                 # 새 채팅을 시작해도
     old = client.get(f"/api/conversations/{a['inquiry_no']}", headers=customer_headers).json()
-    assert old["status"] == "CLOSED" and old["close_reason_label"] == "새 채팅 시작" and len(old["messages"]) == 2
-    assert old["answered_by"] == "AI" and old["admin_answer"] is None
+    assert old["status"] == "OPEN" and old["close_reason"] is None and old["input_locked"] is False   # 이전 채팅은 그대로
+    assert _send(client, customer_headers, a["inquiry_no"], AUTO_Q).status_code == 201                # 이어서 질문 가능
     assert client.get("/api/conversations/current", headers=customer_headers).json()["inquiry_no"] == b["inquiry_no"]
 
-    r = client.post(f"/api/conversations/{b['inquiry_no']}/close", headers=customer_headers)
+    r = client.post(f"/api/conversations/{b['inquiry_no']}/close", headers=customer_headers)   # 채팅 종료하기
     assert r.json()["close_reason_label"] == "고객 종료" and r.json()["input_locked"] is True
+    assert r.json()["answered_by"] == "AI" and r.json()["admin_answer"] is None
     r = _send(client, customer_headers, b["inquiry_no"], "추가 질문")
     assert r.status_code == 409 and r.json()["error"]["code"] == "CONVERSATION_CLOSED"
-    assert client.get("/api/conversations/current", headers=customer_headers).json() is None
+    # 진행 중인 채팅 = 남은 채팅 중 가장 최근 것
+    assert client.get("/api/conversations/current", headers=customer_headers).json()["inquiry_no"] == a["inquiry_no"]
+
+    r = client.post(f"/api/conversations/{a['inquiry_no']}/close", params={"reason": "NEW_CHAT"}, headers=customer_headers)
+    assert r.json()["status"] == "CLOSED" and r.json()["close_reason_label"] == "새 채팅 시작"   # 화면의 '새 채팅하기' 버튼
+    current = client.get("/api/conversations/current", headers=customer_headers).json()
+    assert current is None or current["inquiry_no"] not in (a["inquiry_no"], b["inquiry_no"])
 
 
 def test_idle_timeout_only_while_chatting_with_bot(client, customer_headers, monkeypatch):
@@ -604,12 +611,15 @@ def test_closed_while_reviewing_still_gets_admin_answer(client, customer_headers
 
 
 def test_my_list_tabs_search_and_ownership(client, customer_headers):
-    _start(client, customer_headers, "텀블러 환불 신청은 어디서 하나요? 환불 받고 싶어요", order_no="20241205-3456789")
+    ended = _start(client, customer_headers, AUTO_Q)["inquiry_no"]                    # 종료한 채팅 → 답변완료
+    client.post(f"/api/conversations/{ended}/close", headers=customer_headers)
+    refund = _start(client, customer_headers, "텀블러 환불 신청은 어디서 하나요? 환불 받고 싶어요",
+                    order_no="20241205-3456789")["inquiry_no"]                       # 진행 중인 채팅 → 상담 중
     all_items = client.get("/api/conversations", headers=customer_headers, params={"size": 100}).json()
     assert all_items["page"]["total"] == len(all_items["items"])
     assert {i["status_code"] for i in all_items["items"]} == {"CHATTING", "ANSWERED"}   # 고객 화면 상태는 2개
-    created = [i["created_at"] for i in all_items["items"]]
-    assert created == sorted(created, reverse=True)
+    recent = [i["last_message_at"] for i in all_items["items"]]
+    assert recent == sorted(recent, reverse=True)                                      # 최근 대화순
     assert client.get("/api/conversations", headers=customer_headers, params={"status": "REVIEWING"}).status_code == 422
     for code in ("CHATTING", "ANSWERED"):
         items = client.get("/api/conversations", headers=customer_headers, params={"status": code}).json()["items"]
@@ -617,6 +627,7 @@ def test_my_list_tabs_search_and_ownership(client, customer_headers):
 
     by_product = client.get("/api/conversations", headers=customer_headers, params={"q": "텀블러"}).json()["items"]
     assert by_product and by_product[0]["product_name"] == "스테인리스 텀블러 500ml"
+    client.post(f"/api/conversations/{refund}/close", headers=customer_headers)    # 끝난 채팅은 관리자 '전체' 탭에 보임
 
     with SessionLocal() as db:
         other = Customer(name="다른고객", phone="01099998888")
@@ -862,11 +873,12 @@ def test_edit_admin_answer(client, customer_headers, admin_headers):
 
 
 def test_my_list_counts_and_category(client, customer_headers):
-    _start(client, customer_headers, AUTO_Q)
+    started = {_start(client, customer_headers, AUTO_Q)["inquiry_no"] for _ in range(2)}
     r = client.get("/api/conversations", headers=customer_headers, params={"size": 100}).json()
     counts = r["counts"]
     assert counts["all"] == r["page"]["total"] == counts["CHATTING"] + counts["ANSWERED"]
-    assert counts["CHATTING"] == 1                               # 진행 중인 채팅은 1개
+    chatting = {i["inquiry_no"] for i in r["items"] if i["status_code"] == "CHATTING"}
+    assert started <= chatting and counts["CHATTING"] >= 2       # 진행 중인 채팅이 여러 개일 수 있음
     cats = {i["category"] for i in r["items"] if i["category"]}
     assert cats
     cat = min(cats)
