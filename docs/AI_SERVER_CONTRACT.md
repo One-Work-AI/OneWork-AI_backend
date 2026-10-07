@@ -18,6 +18,9 @@ POST {AI_SERVER_URL}/chat
 - `/chat`은 **카테고리·의도·신뢰도를 주지 않아서** 백엔드가 질문 키워드로 분류하고 신뢰도를 정합니다
   (mock AI와 같은 규칙: 키워드 0개 0.4 / 1개 0.8 / 2개 이상 0.95). 응답에 `category`·`intent`·`*_confidence`를 넣어 주면 그 값을 씁니다.
 - 답변에 "약관에서 해당 내용을 찾을 수 없"는 문구가 있으면 신뢰도를 0.3으로 낮춰 **관리자 검토**로 보냅니다.
+- 답변에 학습 데이터의 **치환자**(`{{orders.order_no}}`, `{{shipping.address}}`, `{{transaction_id}}`, `{{name}}` 등)가 있으면
+  백엔드가 팀 DB 값(질문한 고객 + 가장 최근 주문의 배송·결제·환불)으로 채워서 보냅니다. 팀 DB에 없는 값
+  (`{{case_no}}`, `{{reference_no}}` 등)이 남으면 자동 전송하지 않고 관리자 검토로 보냅니다. `{{Website URL}}`은 백엔드 `.env`의 `SITE_URL`.
 - 이전 대화·고른 주문은 `/chat`이 받지 않아서 보내지 않고, 근거(`referenced_context`)는 정책 조각 번호가 없어 팀 DB `retrieved_policy`에 남지 않습니다.
 - 아래 `/v1/answer` 형식(분류·신뢰도·근거 목록 포함)으로 AI 서버를 바꾸면 `.env`의 `AI_SERVER_FORMAT=v1`로 전환합니다.
 

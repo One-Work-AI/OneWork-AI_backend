@@ -119,6 +119,7 @@ class ReviewReason(str, Enum):
     EMPTY_ANSWER = "EMPTY_ANSWER"
     INVALID_CLASSIFICATION = "INVALID_CLASSIFICATION"
     AI_ERROR = "AI_ERROR"
+    UNFILLED_PLACEHOLDER = "UNFILLED_PLACEHOLDER"
 
 
 REVIEW_REASON_LABELS = {
@@ -130,4 +131,5 @@ REVIEW_REASON_LABELS = {
     ReviewReason.EMPTY_ANSWER: "답변 없음",
     ReviewReason.INVALID_CLASSIFICATION: "정의되지 않은 유형·의도",
     ReviewReason.AI_ERROR: "AI 서버 오류",
+    ReviewReason.UNFILLED_PLACEHOLDER: "채우지 못한 빈칸이 있음",
 }
