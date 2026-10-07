@@ -38,7 +38,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db import SessionLocal, engine
 from app.main import app
-from app.models import Customer, Order, OrderItem, Product
+from app.models import Customer, Order, OrderItem, Payment, Product, Shipping
 from app.services.policies import ingest_directory
 from scripts import seed_base
 
@@ -86,6 +86,11 @@ def _add_test_customer_data() -> None:
             order = Order(order_no=order_no, customer_id=customer.id, order_date=now - timedelta(days=days_ago),
                           status="DELIVERED", total_amount=price)
             order.items = [OrderItem(product_id=product.id, product_name=name, quantity=1, price=price, amount=price)]
+            if order_no == TEST_ORDERS[0][0]:    # 가장 최근 주문에만 배송·결제 정보 (치환자 채우기 테스트용)
+                order.shipping = Shipping(recipient_name="테스트고객", address="서울시 가상구 테스트로 1",
+                                          carrier_name="가상택배", tracking_number="TRACK-0001", status="SHIPPING")
+                order.payment = Payment(payment_method="CREDIT_CARD", payment_status="COMPLETED", amount=price,
+                                        transaction_id="PAY-0001", paid_at=now - timedelta(days=days_ago))
             db.add(order)
         db.commit()
 

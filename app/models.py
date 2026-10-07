@@ -3,6 +3,7 @@
 팀 DB (cs_chatbot 스키마, DB 담당자의 schema.sql) — 백엔드가 쓰는 컬럼만 적었습니다. 구조는 바꾸지 않습니다.
 - customer, admin_user                 고객, 관리자 (체험 계정도 팀 DB의 가상 계정)
 - product, orders, order_item           주문 (선택 항목. 화면에서는 주문 상품 선택을 뺐음)
+- shipping, payment, refund             배송·결제·환불 (AI 답변의 치환자 {{…}}를 채울 때 읽기만 함)
 - conversation                         채팅 1개
 - inquiry                              고객 질문 1개 (채팅 하나에 여러 개). inquiry_no = 채팅 문의번호 + 순서
 - ai_analysis                          질문 하나의 AI 분류와 자동답변 판단 (수정·삭제 불가, 다시 하면 새 행)
@@ -26,9 +27,9 @@
 - SENT가 되면 inquiry.status가 AUTO_ANSWERED(자동) / COMPLETED(관리자)로 바뀜
 - ai_analysis, admin_review, policy_chunk는 수정·삭제 불가 / policy_document는 is_active만 바꿀 수 있음
 """
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, Text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import BACKEND_SCHEMA, TEAM_SCHEMA, Base
@@ -98,6 +99,10 @@ class Order(Base):
     created_at: Mapped[datetime] = _ts(default=utcnow)
 
     items: Mapped[list["OrderItem"]] = relationship(order_by="OrderItem.id", lazy="selectin")
+    # 주문당 배송·결제·환불은 최대 1개 (팀 DB 규칙). 답변의 치환자를 채울 때만 읽음 (services/placeholders.py)
+    shipping: Mapped["Shipping | None"] = relationship()
+    payment: Mapped["Payment | None"] = relationship()
+    refund: Mapped["Refund | None"] = relationship()
 
 
 class OrderItem(Base):
@@ -113,6 +118,45 @@ class OrderItem(Base):
     price: Mapped[int] = mapped_column(BigInteger)
     discount_amount: Mapped[int] = mapped_column(BigInteger, default=0)
     amount: Mapped[int] = mapped_column(BigInteger)
+
+
+class Shipping(Base):
+    __tablename__ = "shipping"
+    __table_args__ = TEAM
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    order_id: Mapped[int] = mapped_column(BigInteger, _fk("orders"), unique=True)
+    recipient_name: Mapped[str] = mapped_column(Text)
+    address: Mapped[str] = mapped_column(Text)
+    shipping_method: Mapped[str | None] = mapped_column(Text)
+    carrier_name: Mapped[str | None] = mapped_column(Text)
+    tracking_number: Mapped[str | None] = mapped_column(Text)
+    estimated_delivery_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(Text, default="PREPARING")
+
+
+class Payment(Base):
+    __tablename__ = "payment"
+    __table_args__ = TEAM
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    order_id: Mapped[int] = mapped_column(BigInteger, _fk("orders"), unique=True)
+    payment_method: Mapped[str] = mapped_column(Text)        # BANK_TRANSFER / CREDIT_CARD / EASY_PAY
+    payment_status: Mapped[str] = mapped_column(Text, default="PENDING")
+    amount: Mapped[int] = mapped_column(BigInteger)
+    transaction_id: Mapped[str | None] = mapped_column(Text)
+    paid_at: Mapped[datetime | None] = _ts()
+
+
+class Refund(Base):
+    __tablename__ = "refund"
+    __table_args__ = TEAM
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    order_id: Mapped[int] = mapped_column(BigInteger, _fk("orders"), unique=True)
+    refund_reason: Mapped[str] = mapped_column(Text)
+    refund_amount: Mapped[int] = mapped_column(BigInteger)
+    refund_status: Mapped[str] = mapped_column(Text, default="REQUESTED")
 
 
 # ───────────────────────── 팀 DB: 상담 ─────────────────────────

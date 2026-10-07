@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     policy_file_dir: str = "storage/policies"
     policy_max_mb: int = 200
 
+    # AI 답변의 {{Website URL}} 치환자에 넣을 쇼핑몰 주소 (비우면 그 치환자는 못 채워서 관리자 검토로 감)
+    site_url: str = ""
+
     # 문의번호 접두어 — 형식: Q20261002-001 (접두어 + 한국 날짜 + 하루 일련번호 3자리)
     inquiry_no_prefix: str = "Q"
 
