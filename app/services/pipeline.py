@@ -5,6 +5,9 @@
         └─ 기준 미만 등   → 초안만 저장 (ai_response status=REVIEW_PENDING), 고객 화면엔 '담당자에게 전달했어요' 안내
                              (입력은 계속 가능, 타이머 멈춤 → 관리자 답변이 같은 채팅에 붙음)
 
+AI 답변에 치환자({{주문번호}} 등)가 있으면 팀 DB 값으로 채운 뒤 저장·전송합니다 (services/placeholders.py).
+채우지 못한 치환자가 남으면 자동 전송하지 않고 관리자 검토로 보냅니다.
+
 팀 DB에 남는 것: ai_analysis(분류·판단·검토 사유, 질문마다 1행) + ai_response(초안·전송) + retrieved_policy(근거)
 AI 서버 오류 내용과 응답 시간은 DB에 칸이 없어서 서버 로그에만 남깁니다.
 AI 서버가 돌려준 근거 중 팀 DB의 정책 조각(document_key + 조각 순서)과 연결되는 것만 retrieved_policy에 남습니다.
@@ -27,6 +30,7 @@ from app.models import (
     AIResponse,
     Conversation,
     ConversationExt,
+    Customer,
     Inquiry,
     PolicyChunk,
     PolicyDocument,
@@ -37,6 +41,8 @@ from app.plugins.ai_client import AIRequest, AIResult, HistoryItem, OrderContext
 from app.plugins.order_source import product_name
 from app.services.conversations import chat_no, chat_order, question_status, transcript
 from app.services.decision import decide
+from app.services.placeholders import fill as fill_placeholders
+from app.services.placeholders import latest_order
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +160,16 @@ def _process_one(question_id: int) -> None:
             return
         now = utcnow()
 
+        # AI 답변의 치환자({{…}})를 팀 DB 값으로 채움. 못 채운 것이 남으면 자동 전송하지 않고 관리자 검토로
+        answer = (result.answer or "").strip() if result else ""
+        if "{{" in answer:
+            order = chat_order(q.conversation) or latest_order(db, q.customer_id)
+            answer, unfilled = fill_placeholders(answer, db.get(Customer, q.customer_id), order)
+            if unfilled:
+                decision.auto_send = False
+                decision.reasons.append(ReviewReason.UNFILLED_PLACEHOLDER)
+                log.info("문의 %s: 채우지 못한 치환자 %s", q.inquiry_no, unfilled)
+
         analysis = AIAnalysis(
             inquiry_id=q.id,
             category=_label(result.category if result else None),
@@ -169,7 +185,6 @@ def _process_one(question_id: int) -> None:
         db.add(analysis)
         db.flush()   # 답변의 자동 전송 검사(팀 DB 트리거)가 이 분석을 보므로 먼저 저장
 
-        answer = (result.answer or "").strip() if result else ""
         if answer:
             response = AIResponse(inquiry_id=q.id, analysis_id=analysis.id, response_text=answer,
                                   generation_model=result.model or "unknown",
